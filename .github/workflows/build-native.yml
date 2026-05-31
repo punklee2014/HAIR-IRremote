@@ -34,12 +34,13 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++ make python3-dev curl
+          sudo apt-get install -y --no-install-recommends g++ make python3-dev curl libpcre2-dev
 
       - name: Build SWIG 4.2.1
         run: |
-          curl -sL "https://downloads.sourceforge.net/project/swig/swig/swig-4.2.1/swig-4.2.1.tar.gz" \
-            | tar xzf - -C /tmp
+          curl -sL "https://sourceforge.net/projects/swig/files/swig/swig-4.2.1/swig-4.2.1.tar.gz/download" \
+            -o /tmp/swig-4.2.1.tar.gz
+          tar xzf /tmp/swig-4.2.1.tar.gz -C /tmp
           cd /tmp/swig-4.2.1
           ./configure --prefix=/usr/local
           make -j"$(nproc)"
