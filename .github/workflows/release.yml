@@ -8,38 +8,43 @@ on:
 jobs:
   build-native:
     name: Build native (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         include:
           - arch: linux_x86_64
-            runner: ubuntu-24.04
+            platform: linux/amd64
+            script_arch: x86_64
           - arch: linux_aarch64
-            runner: ubuntu-24.04-arm64
+            platform: linux/arm64
+            script_arch: aarch64
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++ make python3-dev curl libpcre2-dev
+      - name: Set up QEMU (for cross-platform builds)
+        uses: docker/setup-qemu-action@v3
 
-      - name: Build SWIG 4.2.1
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build irhvac builder image (${{ matrix.platform }})
         run: |
-          curl -sL "https://sourceforge.net/projects/swig/files/swig/swig-4.2.1/swig-4.2.1.tar.gz/download" \
-            -o /tmp/swig-4.2.1.tar.gz
-          tar xzf /tmp/swig-4.2.1.tar.gz -C /tmp
-          cd /tmp/swig-4.2.1
-          ./configure --prefix=/usr/local
-          make -j"$(nproc)"
-          sudo make install
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            -f build/docker/Dockerfile.irhvac \
+            -t irhvac-builder:${{ matrix.arch }} \
+            --load \
+            .
 
       - name: Build _irhvac.so
         run: |
-          chmod +x build/build_irhvac.sh
-          ./build/build_irhvac.sh "${{ matrix.arch == 'linux_x86_64' && 'x86_64' || 'aarch64' }}"
+          docker run --rm \
+            --platform ${{ matrix.platform }} \
+            -v ${{ github.workspace }}:/workspace \
+            irhvac-builder:${{ matrix.arch }} \
+            ./build/build_irhvac.sh ${{ matrix.script_arch }}
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
@@ -64,7 +69,6 @@ jobs:
 
       - name: Merge native into custom_components
         run: |
-          # Copy native .so files into the integration tree.
           for arch_dir in native-artifacts/native-*; do
             arch_name=$(basename "$arch_dir" | sed 's/^native-//')
             mkdir -p "custom_components/hair/native/$arch_name"
