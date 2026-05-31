@@ -1,0 +1,62 @@
+# HAIR-IRremote
+
+HAIR-IRremote is a fork of [HAIR](https://github.com/DAB-LABS/HAIR) that extends it with protocol-based
+AC command encoding using [IRremoteESP8266](https://github.com/crankyoldgit/IRremoteESP8266).
+
+Instead of learning temperature commands one-by-one, HAIR-IRremote encodes AC commands on the fly using IRac.
+Select a protocol (MIDEA, DAIKIN, COOLIX, etc.), bind an emitter, and your AC appears as a native HA climate
+entity with full temperature/mode/fan control. All HAIR features are preserved: Sniffer, device management,
+triggers, and emitter routing.
+
+## Architecture
+
+HAIR sits between you and HA's infrared platform. It does not replace your hardware integrations — it adds
+the admin layer.
+
+- Capture: ESPHome remote_receiver → HA event bus → HAIR Signal Monitor
+- Transmit: HAIR → HA infrared platform → any platform integration (ESPHome, Tuya, Broadlink, etc.)
+- Signal fingerprinting: S/L pulse classification across NEC, Samsung, JVC, LG, Sony, RC-5/RC-6
+
+## Key files
+
+- custom_components/hair/ — HA integration (Python)
+  - climate.py — Climate entity (LEARNED + PROTOCOL branches)
+  - device_manager.py — Device CRUD + async_send_raw_timings
+  - models.py — IRDevice, IRCommand, EntityConfig dataclasses
+  - const.py — Enums including AcControlMode
+  - encoder/irremote_ac.py — IRac wrapper → list[int] timings
+  - encoder/loader.py — Platform-aware native module loader
+  - websocket_api.py — WS commands for frontend
+  - storage.py — HA Store with migration v1.1→v1.2
+  - ir_command.py — ProntoCommand, RawTimingsCommand adapters
+  - frontend/src/ — LitElement TypeScript admin panel
+- vendor/IRremoteESP8266/ — git submodule
+- build/build_irhvac.sh — Compile _irhvac.so via SWIG
+- build/docker/Dockerfile.irhvac — Docker build environment
+- .github/workflows/ — CI (pytest+ruff), build-native (Docker+QEMU), release
+- esphome/ — ESPHome config examples
+
+## Protocol AC flow
+
+1. User creates AC device with ac_control_mode="protocol" + ir_protocol="COOLIX"
+2. HA climate entity exposes temp range 16-30°C, HVAC modes, fan modes
+3. On set_temperature/set_hvac_mode → encoder.encode() → IRac.sendAc() → getTiming()
+4. Timings converted to signed microseconds (positive=mark, negative=space)
+5. Sent via infrared.async_send_command with RawTimingsCommand
+
+## Build requirements
+
+- Linux only (HA OS / Container / Supervised)
+- Python ≥ 3.12, Home Assistant ≥ 2026.4
+- Native module: SWIG 4.2+, g++, python3-dev
+- Frontend: Node ≥ 18, npm install && npm run build
+
+## Developer setup (Windows 11)
+
+Python tests and frontend work natively on Windows. irhvac must be compiled in WSL2 or Docker.
+See README.md for full instructions.
+
+## Credits
+
+- HAIR: https://github.com/DAB-LABS/HAIR
+- IRremoteESP8266: https://github.com/crankyoldgit/IRremoteESP8266 (LGPL-2.1+)

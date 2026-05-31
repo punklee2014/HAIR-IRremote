@@ -45,6 +45,13 @@ export class IrDeviceDetail extends LitElement {
     @state() private _editingName = false;
     @state() private _draftName = "";
 
+    // Protocol AC fields
+    @state() private _acControlMode: string = "learned";
+    @state() private _irProtocol: string | null = null;
+    @state() private _irModel: number | null = null;
+    @state() private _celsius: boolean = true;
+    @state() private _protocols: string[] = [];
+
     // Triggers
     @state() private _triggers: IRTrigger[] = [];
     @state() private _triggerCommand: IRCommand | null = null;
@@ -214,20 +221,70 @@ export class IrDeviceDetail extends LitElement {
     }
 
     // ---------------------------------------------------------------
-    // Action mapping
+    // Protocol AC field changes
     // ---------------------------------------------------------------
 
-    connectedCallback(): void {
-        super.connectedCallback();
-        void this._loadActionOptions();
-        void this._loadTriggers();
+    private async _onAcControlModeChanged(mode: string) {
+        this._acControlMode = mode;
+        await this._saveProtocolFields();
+        if (mode === "protocol") {
+            void this._loadProtocols();
+        }
     }
+
+    private async _onIrProtocolChanged(e: Event) {
+        this._irProtocol = (e.target as HTMLSelectElement).value || null;
+        await this._saveProtocolFields();
+    }
+
+    private async _onIrModelChanged(e: Event) {
+        const val = (e.target as HTMLInputElement).value;
+        this._irModel = val ? parseInt(val, 10) : null;
+        await this._saveProtocolFields();
+    }
+
+    private async _onCelsiusToggled() {
+        this._celsius = !this._celsius;
+        await this._saveProtocolFields();
+    }
+
+    private async _saveProtocolFields() {
+        this._busy = true;
+        try {
+            this.device = await this.api.updateDevice(this.device.id, {
+                ac_control_mode: this._acControlMode,
+                ir_protocol: this._irProtocol,
+                ir_model: this._irModel,
+                celsius: this._celsius,
+            });
+            this._flash("AC settings updated");
+            this.dispatchEvent(
+                new CustomEvent("device-changed", { bubbles: true, composed: true }),
+            );
+        } catch (err) {
+            this._flash(`Update failed: ${(err as Error).message}`);
+        } finally {
+            this._busy = false;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Action mapping
+    // ---------------------------------------------------------------
 
     updated(changed: Map<string, unknown>): void {
         if (changed.has("device")) {
             void this._loadActionOptions();
             void this._loadTriggers();
+            this._syncProtocolState();
         }
+    }
+
+    connectedCallback(): void {
+        super.connectedCallback();
+        void this._loadActionOptions();
+        void this._loadTriggers();
+        this._syncProtocolState();
     }
 
     private async _loadActionOptions() {
@@ -243,6 +300,26 @@ export class IrDeviceDetail extends LitElement {
             this._triggers = await this.api.listTriggers();
         } catch {
             this._triggers = [];
+        }
+    }
+
+    private _syncProtocolState() {
+        this._acControlMode = this.device.ac_control_mode ?? "learned";
+        this._irProtocol = this.device.ir_protocol ?? null;
+        this._irModel = this.device.ir_model ?? null;
+        this._celsius = this.device.celsius ?? true;
+        if (this.device.device_type === "ac") {
+            void this._loadProtocols();
+        }
+    }
+
+    private async _loadProtocols() {
+        if (this._protocols.length > 0) return;
+        try {
+            const result = await this.api.listProtocols();
+            this._protocols = result.protocols;
+        } catch {
+            this._protocols = [];
         }
     }
 
@@ -559,6 +636,84 @@ export class IrDeviceDetail extends LitElement {
                         @emitters-changed=${this._onEmittersChanged}
                     ></ir-emitter-picker>
                 </div>
+                ${this.device.device_type === "ac"
+                    ? html`
+                        <span class="meta-label">Control</span>
+                        <div class="meta-value">
+                            <div class="radio-group">
+                                <label class="radio-label">
+                                    <input
+                                        type="radio"
+                                        name="ac_control_mode_detail"
+                                        value="learned"
+                                        ?checked=${this._acControlMode === "learned"}
+                                        ?disabled=${this._busy}
+                                        @change=${() => this._onAcControlModeChanged("learned")}
+                                    />
+                                    Learned
+                                </label>
+                                <label class="radio-label">
+                                    <input
+                                        type="radio"
+                                        name="ac_control_mode_detail"
+                                        value="protocol"
+                                        ?checked=${this._acControlMode === "protocol"}
+                                        ?disabled=${this._busy}
+                                        @change=${() => this._onAcControlModeChanged("protocol")}
+                                    />
+                                    Protocol (IRremoteESP8266)
+                                </label>
+                            </div>
+                        </div>
+                        ${this._acControlMode === "protocol"
+                            ? html`
+                                <span class="meta-label">Protocol</span>
+                                <div class="meta-value">
+                                    <select
+                                        .value=${this._irProtocol || ""}
+                                        ?disabled=${this._busy}
+                                        @change=${this._onIrProtocolChanged}
+                                    >
+                                        <option value="">-- Select --</option>
+                                        ${this._protocols.map(
+                                            (p) => html`
+                                                <option
+                                                    value=${p}
+                                                    ?selected=${this._irProtocol === p}
+                                                >
+                                                    ${p}
+                                                </option>
+                                            `,
+                                        )}
+                                    </select>
+                                </div>
+                                <span class="meta-label">Model</span>
+                                <div class="meta-value">
+                                    <input
+                                        type="number"
+                                        .value=${this._irModel != null ? String(this._irModel) : ""}
+                                        placeholder="1 (default)"
+                                        ?disabled=${this._busy}
+                                        @input=${this._onIrModelChanged}
+                                        min="1"
+                                    />
+                                </div>
+                                <span class="meta-label">Unit</span>
+                                <div class="meta-value">
+                                    <label class="toggle-label">
+                                        <input
+                                            type="checkbox"
+                                            ?checked=${this._celsius}
+                                            ?disabled=${this._busy}
+                                            @change=${this._onCelsiusToggled}
+                                        />
+                                        Celsius
+                                    </label>
+                                </div>
+                            `
+                            : ""}
+                    `
+                    : ""}
             </div>
 
             <!-- Commands -->
@@ -792,7 +947,8 @@ export class IrDeviceDetail extends LitElement {
             color: var(--secondary-text-color);
             padding-top: 6px;
         }
-        .meta-value select {
+        .meta-value select,
+        .meta-value input[type="number"] {
             width: 100%;
             padding: 6px 8px;
             border-radius: 4px;
@@ -802,8 +958,28 @@ export class IrDeviceDetail extends LitElement {
             font-family: inherit;
             font-size: 0.85rem;
         }
-        .meta-value ir-emitter-picker {
-            --picker-label-display: none;
+        .meta-value select:focus,
+        .meta-value input[type="number"]:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+        .radio-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .radio-label, .toggle-label {
+            font-size: 0.85rem;
+            color: var(--primary-text-color);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .radio-label input[type="radio"],
+        .toggle-label input[type="checkbox"] {
+            margin: 0;
+            accent-color: var(--primary-color);
         }
 
         /* --- Buttons --- */
