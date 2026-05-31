@@ -1,0 +1,60 @@
+name: Build Native (irhvac)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "vendor/IRremoteESP8266/**"
+      - "build/**"
+      - ".github/workflows/build-native.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "vendor/IRremoteESP8266/**"
+      - "build/**"
+      - ".github/workflows/build-native.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build _irhvac.so (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: linux_x86_64
+            runner: ubuntu-24.04
+          - arch: linux_aarch64
+            runner: ubuntu-24.04-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ make python3-dev curl
+
+      - name: Build SWIG 4.2.1
+        run: |
+          curl -sL "https://downloads.sourceforge.net/project/swig/swig/swig-4.2.1/swig-4.2.1.tar.gz" \
+            | tar xzf - -C /tmp
+          cd /tmp/swig-4.2.1
+          ./configure --prefix=/usr/local
+          make -j"$(nproc)"
+          sudo make install
+          swig -version
+
+      - name: Build _irhvac.so
+        run: |
+          chmod +x build/build_irhvac.sh
+          ./build/build_irhvac.sh "${{ matrix.arch == 'linux_x86_64' && 'x86_64' || 'aarch64' }}"
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.arch }}
+          path: |
+            custom_components/hair/native/${{ matrix.arch }}/_irhvac.so
+            custom_components/hair/native/${{ matrix.arch }}/irhvac.py

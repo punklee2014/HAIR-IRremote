@@ -1,0 +1,16 @@
+{
+    "domain": "hair",
+    "name": "HAIR-IRremote",
+    "version": "0.2.0-alpha",
+    "documentation": "https://github.com/DAB-LABS/HAIR-IRremote",
+    "issue_tracker": "https://github.com/DAB-LABS/HAIR-IRremote/issues",
+    "dependencies": ["infrared"],
+    "after_dependencies": ["esphome", "broadlink"],
+    "codeowners": ["@DAB-LABS"],
+    "config_flow": true,
+    "iot_class": "local_push",
+    "integration_type": "hub",
+    "requirements": ["infrared-protocols>=2.0.0"],
+    "quality_scale": "silver",
+    "loggers": ["custom_components.hair"]
+}

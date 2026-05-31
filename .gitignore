@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+/dist/
+build/
+# Allow the frontend bundle (HA loads it directly)
+!custom_components/hair/frontend/dist/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+pytest-cache-files-*/
+.coverage
+htmlcov/
+*.cover
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backups
+*.bak
+*.bak2
+.backups/
+
+# OS
+.DS_Store
+Thumbs.db
+.Trash/
+.trash/
+
+# Node (frontend build)
+node_modules/
+custom_components/hair/frontend/node_modules/
+
+# Claude local settings
+.claude/
+CLAUDE.md
+images/internal/
+images/gui/
+
+# Internal docs (not for public repo)
+docs/internal/
+
+# Working files
+trash/
+
+# Native build artifacts (compiled .so, generated .py wrappers).
+# Keep the directory structure but not the build outputs in version control.
+custom_components/hair/native/*/_irhvac.so
+custom_components/hair/native/*/irhvac.py
+custom_components/hair/native/*/__pycache__/
+vendor/IRremoteESP8266/python/*.o
+vendor/IRremoteESP8266/python/*.cxx
+vendor/IRremoteESP8266/python/_irhvac.so
+vendor/IRremoteESP8266/python/irhvac.py
+vendor/IRremoteESP8266/python/*.pyc

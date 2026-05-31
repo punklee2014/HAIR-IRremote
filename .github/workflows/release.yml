@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-native:
+    name: Build native (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: linux_x86_64
+            runner: ubuntu-24.04
+          - arch: linux_aarch64
+            runner: ubuntu-24.04-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ make python3-dev curl
+
+      - name: Build SWIG 4.2.1
+        run: |
+          curl -sL "https://downloads.sourceforge.net/project/swig/swig/swig-4.2.1/swig-4.2.1.tar.gz" \
+            | tar xzf - -C /tmp
+          cd /tmp/swig-4.2.1
+          ./configure --prefix=/usr/local
+          make -j"$(nproc)"
+          sudo make install
+
+      - name: Build _irhvac.so
+        run: |
+          chmod +x build/build_irhvac.sh
+          ./build/build_irhvac.sh "${{ matrix.arch == 'linux_x86_64' && 'x86_64' || 'aarch64' }}"
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.arch }}
+          path: |
+            custom_components/hair/native/${{ matrix.arch }}/_irhvac.so
+            custom_components/hair/native/${{ matrix.arch }}/irhvac.py
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build-native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native-artifacts
+
+      - name: Merge native into custom_components
+        run: |
+          # Copy native .so files into the integration tree.
+          for arch_dir in native-artifacts/native-*; do
+            arch_name=$(basename "$arch_dir" | sed 's/^native-//')
+            mkdir -p "custom_components/hair/native/$arch_name"
+            cp "$arch_dir"/* "custom_components/hair/native/$arch_name/"
+          done
+          ls -R custom_components/hair/native/
+
+      - name: Create release zip
+        run: |
+          mkdir -p release/hair
+          cp -r custom_components/hair/* release/hair/
+          (cd release && zip -r ../hair_irremote.zip hair/)
+
+      - name: Upload release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: hair_irremote.zip
+          generate_release_notes: true

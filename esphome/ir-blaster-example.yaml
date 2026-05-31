@@ -1,0 +1,59 @@
+# ESPHome IR Blaster (TX) for HAIR-IRremote
+#
+# This configuration exposes an infrared entity that HAIR-IRremote
+# can use to send IR commands.  Works with any ESP32 or ESP8266
+# board connected to an IR LED.
+#
+# Requires Home Assistant >= 2026.4 and ESPHome >= 2025.12.
+
+esphome:
+  name: ir-blaster-living-room
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# --- IR Transmitter (TX) ---
+remote_transmitter:
+  id: ir_tx
+  pin: GPIO4
+  carrier_duty_percent: 50%
+
+# Native HA infrared platform (HA 2026.4+).
+# This exposes an ``infrared.living_room_ir_tx`` entity that HAIR-IRremote
+# discovers automatically as an emitter.
+infrared:
+  - platform: ir_rf_proxy
+    name: "Living Room IR TX"
+    remote_transmitter_id: ir_tx
+
+# --- Optional: IR Receiver (RX, for Sniffer) ---
+# Uncomment the block below if you also want to capture IR signals.
+# Until HA ships native InfraredReceiverEntity, this uses the event-bus
+# bridge that HAIR's Signal Monitor subscribes to.
+#
+# remote_receiver:
+#   id: ir_receiver
+#   pin:
+#     number: GPIO5
+#     inverted: true
+#   dump: pronto
+#   on_pronto:
+#     then:
+#       - homeassistant.event:
+#           event: esphome.remote_received
+#           data:
+#             protocol: "PRONTO"
+#             code: !lambda 'return x.data;'
+
+# --- Wi-Fi ---
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# --- API ---
+api:
+
+ota:
+  platform: esphome

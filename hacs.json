@@ -1,0 +1,7 @@
+{
+    "name": "HAIR-IRremote",
+    "homeassistant": "2026.4.0",
+    "render_readme": true,
+    "zip_release": true,
+    "zip_release_file": "hair_irremote.zip"
+}

@@ -1,0 +1,3 @@
+[submodule "vendor/IRremoteESP8266"]
+	path = vendor/IRremoteESP8266
+	url = https://github.com/crankyoldgit/IRremoteESP8266.git
