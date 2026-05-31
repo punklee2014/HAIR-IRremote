@@ -112,7 +112,7 @@ def encode(
         ac.next.power = 1
         ac.next.mode = _MODE_MAP.get(hvac_mode, _MODE_MAP["auto"])
         if temperature is not None:
-            ac.next.degrees = int(round(temperature))
+            ac.next.degrees = round(temperature)
         if fan_mode and fan_mode in _FAN_MAP:
             ac.next.fanspeed = _FAN_MAP[fan_mode]
     else:

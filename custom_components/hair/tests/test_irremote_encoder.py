@@ -19,6 +19,11 @@ import pytest
 from custom_components.hair.const import DeviceType
 from custom_components.hair.models import IRDevice
 
+
+def _patch_write_state(entity) -> None:
+    """Patch async_write_ha_state on an entity instance (stub base has no impl)."""
+    entity.async_write_ha_state = MagicMock()
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -26,16 +31,17 @@ from custom_components.hair.models import IRDevice
 
 def make_protocol_device(**overrides) -> IRDevice:
     """Create an AC device in protocol mode."""
-    return IRDevice(
-        name="Test AC",
-        device_type=DeviceType.AC,
-        emitter_entity_ids=["infrared.living_room_tx"],
-        ac_control_mode="protocol",
-        ir_protocol="COOLIX",
-        ir_model=1,
-        celsius=True,
-        **overrides,
-    )
+    kwargs = {
+        "name": "Test AC",
+        "device_type": DeviceType.AC,
+        "emitter_entity_ids": ["infrared.living_room_tx"],
+        "ac_control_mode": "protocol",
+        "ir_protocol": "COOLIX",
+        "ir_model": 1,
+        "celsius": True,
+    }
+    kwargs.update(overrides)
+    return IRDevice(**kwargs)
 
 
 def make_learned_device() -> IRDevice:
@@ -65,11 +71,13 @@ class TestEncoderNative:
     def test_import_raises_without_native(self) -> None:
         """Encoder raises a clear error when native module is missing."""
         # Simulate missing native by patching loader.
-        with patch(
-            "custom_components.hair.encoder.loader.load_irhvac",
-            side_effect=ImportError("No _irhvac.so for this platform"),
+        with (
+            patch(
+                "custom_components.hair.encoder.loader.load_irhvac",
+                side_effect=ImportError("No _irhvac.so for this platform"),
+            ),
+            pytest.raises(ImportError, match=r"No _irhvac\.so"),
         ):
-            with pytest.raises(ImportError, match="No _irhvac.so"):
                 from custom_components.hair.encoder.irremote_ac import encode
 
                 encode(make_protocol_device(), power=True, hvac_mode="cool", temperature=24)
@@ -174,11 +182,12 @@ class TestClimateProtocolBranch:
 
         device = make_protocol_device()
         entity = HAIRClimateEntity(device, mock_manager)
+        _patch_write_state(entity)
 
         with patch(
             "custom_components.hair.encoder.irremote_ac.encode",
             return_value=[9000, -4500, 560, -560],
-        ) as mock_encode:
+        ):
             await entity.async_turn_on()
 
         mock_manager.async_send_raw_timings.assert_called_once()
@@ -198,6 +207,7 @@ class TestClimateProtocolBranch:
         device.entity_config.command_mapping["power_toggle"] = "Power Toggle"
 
         entity = HAIRClimateEntity(device, mock_manager)
+        _patch_write_state(entity)
         await entity.async_turn_on()
 
         mock_manager.async_send_command.assert_called()
@@ -210,6 +220,7 @@ class TestClimateProtocolBranch:
 
         device = make_protocol_device()
         entity = HAIRClimateEntity(device, mock_manager)
+        _patch_write_state(entity)
 
         with patch(
             "custom_components.hair.encoder.irremote_ac.encode",
@@ -231,6 +242,7 @@ class TestClimateProtocolBranch:
 
         device = make_protocol_device()
         entity = HAIRClimateEntity(device, mock_manager)
+        _patch_write_state(entity)
 
         with patch(
             "custom_components.hair.encoder.irremote_ac.encode",
