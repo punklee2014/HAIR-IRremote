@@ -1,0 +1,32 @@
+# Build environment for compiling _irhvac.so
+#
+# Build for native arch:
+#   docker build -f build/docker/Dockerfile.irhvac -t irhvac-builder .
+#   docker run --rm -v $(pwd):/workspace irhvac-builder ./build/build_irhvac.sh x86_64
+#
+# Cross-compile aarch64 (requires QEMU):
+#   docker buildx build --platform linux/arm64 -f build/docker/Dockerfile.irhvac -t irhvac-builder:arm64 --load .
+#   docker run --rm --platform linux/arm64 -v $(pwd):/workspace irhvac-builder:arm64 ./build/build_irhvac.sh aarch64
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    g++ \
+    make \
+    python3-dev \
+    curl \
+    ca-certificates \
+    libpcre2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG SWIG_VERSION=4.2.1
+
+RUN curl -sL "https://sourceforge.net/projects/swig/files/swig/swig-${SWIG_VERSION}/swig-${SWIG_VERSION}.tar.gz/download" \
+    -o /tmp/swig.tar.gz \
+    && tar xzf /tmp/swig.tar.gz -C /tmp \
+    && cd "/tmp/swig-${SWIG_VERSION}" \
+    && ./configure --prefix=/usr/local \
+    && make -j"$(nproc)" \
+    && make install \
+    && rm -rf /tmp/swig.tar.gz "/tmp/swig-${SWIG_VERSION}"
+
+WORKDIR /workspace

@@ -5,6 +5,10 @@ __pycache__/
 *.egg-info/
 /dist/
 build/
+# Allow build scripts (source files, not build outputs)
+!build/build_irhvac.sh
+!build/docker/
+!build/docker/Dockerfile.irhvac
 # Allow the frontend bundle (HA loads it directly)
 !custom_components/hair/frontend/dist/
 *.egg
