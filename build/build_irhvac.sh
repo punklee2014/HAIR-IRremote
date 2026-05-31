@@ -18,8 +18,10 @@ cd "$PYTHON_DIR"
 # Clean previous build artifacts.
 make distclean 2>/dev/null || true
 
-# Generate SWIG wrapper + compile _irhvac.so.
-make swig
+# Build _irhvac.so directly.
+# Its dependency chain (libirhvac_wrap.cxx) invokes the system `swig`
+# command. We skip the `swig` target because it contains a Docker-detection
+# block that looks for ./swig-4.2.0/swig which does not exist in our image.
 make _irhvac.so
 
 # Copy output.
