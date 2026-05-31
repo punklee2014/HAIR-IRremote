@@ -44,7 +44,7 @@ jobs:
             --platform ${{ matrix.platform }} \
             -v ${{ github.workspace }}:/workspace \
             irhvac-builder:${{ matrix.arch }} \
-            ./build/build_irhvac.sh ${{ matrix.script_arch }}
+            bash ./build/build_irhvac.sh ${{ matrix.script_arch }}
 
       - name: Upload native artifacts
         uses: actions/upload-artifact@v4
