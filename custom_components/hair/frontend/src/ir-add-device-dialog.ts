@@ -40,6 +40,7 @@ export class IrAddDeviceDialog extends LitElement {
     // Protocol AC fields
     @state() private _acControlMode: AcControlMode = "learned";
     @state() private _irProtocol: string | null = null;
+    @state() private _irModel: number | null = null;
     @state() private _protocols: string[] = [];
 
     connectedCallback(): void {
@@ -94,6 +95,8 @@ export class IrAddDeviceDialog extends LitElement {
                 ac_control_mode: this._deviceType === "ac" ? this._acControlMode : "learned",
                 ir_protocol: this._deviceType === "ac" && this._acControlMode === "protocol"
                     ? this._irProtocol : null,
+                ir_model: this._deviceType === "ac" && this._acControlMode === "protocol"
+                    ? this._irModel : null,
             });
             this.dispatchEvent(
                 new CustomEvent("device-created", {
@@ -212,6 +215,19 @@ export class IrAddDeviceDialog extends LitElement {
                                             `,
                                         )}
                                     </select>
+                                </div>
+                                <div class="field">
+                                    <label>Model (optional)</label>
+                                    <input
+                                        type="number"
+                                        .value=${this._irModel != null ? String(this._irModel) : ""}
+                                        placeholder="1 = default model"
+                                        min="1"
+                                        @input=${(e: Event) =>
+                                            (this._irModel = (e.target as HTMLInputElement).value
+                                                ? parseInt((e.target as HTMLInputElement).value, 10)
+                                                : null)}
+                                    />
                                 </div>
                             `
                             : ""}
