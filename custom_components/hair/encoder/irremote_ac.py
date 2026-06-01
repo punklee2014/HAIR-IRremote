@@ -26,6 +26,97 @@ _MODE_MAP: dict[str, int] = {}
 # Fan mode → irhvac fanspeed_t constant.
 _FAN_MAP: dict[str, int] = {}
 
+# ---------------------------------------------------------------------------
+# Protocol-to-model lookup table.
+# Built from the C++ enums in vendor/IRremoteESP8266/src/IRsend.h.
+# Each entry: { "value": int, "label": str }
+# "value" 0 always means "Default / Generic".
+# ---------------------------------------------------------------------------
+
+PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
+    "ARGO": [
+        {"value": 1, "label": "SAC_WREM2 (Default)"},
+        {"value": 2, "label": "SAC_WREM3"},
+    ],
+    "FUJITSU_AC": [
+        {"value": 1, "label": "ARRAH2E (Default)"},
+        {"value": 2, "label": "ARDB1"},
+        {"value": 3, "label": "ARREB1E"},
+        {"value": 4, "label": "ARJW2"},
+        {"value": 5, "label": "ARRY4"},
+        {"value": 6, "label": "ARREW4E"},
+    ],
+    "GREE": [
+        {"value": 1, "label": "YAW1F (Default)"},
+        {"value": 2, "label": "YBOFB"},
+        {"value": 3, "label": "YX1FSF"},
+    ],
+    "HAIER_AC176": [
+        {"value": 1, "label": "V9014557_A (Default)"},
+        {"value": 2, "label": "V9014557_B"},
+    ],
+    "HITACHI_AC1": [
+        {"value": 1, "label": "R_LT0541_HTA_A (Default)"},
+        {"value": 2, "label": "R_LT0541_HTA_B"},
+    ],
+    "KELON168": [
+        {"value": 1, "label": "DG11R201 (Default)"},
+    ],
+    "LG": [
+        {"value": 1, "label": "GE6711AR2853M (Default)"},
+        {"value": 2, "label": "AKB75215403"},
+        {"value": 3, "label": "AKB74955603"},
+        {"value": 4, "label": "AKB73757604"},
+        {"value": 5, "label": "LG6711A20083V"},
+    ],
+    "MIRAGE": [
+        {"value": 1, "label": "KKG9AC1 (Default)"},
+        {"value": 2, "label": "KKG29AC1"},
+    ],
+    "PANASONIC_AC": [
+        {"value": 0, "label": "Unknown (Default)"},
+        {"value": 1, "label": "LKE"},
+        {"value": 2, "label": "NKE"},
+        {"value": 3, "label": "DKE / PKR"},
+        {"value": 4, "label": "JKE"},
+        {"value": 5, "label": "CKP"},
+        {"value": 6, "label": "RKR"},
+    ],
+    "SHARP_AC": [
+        {"value": 1, "label": "A907 (Default)"},
+        {"value": 2, "label": "A705"},
+        {"value": 3, "label": "A903 / 820"},
+    ],
+    "TCL96AC": [
+        {"value": 1, "label": "TAC09CHSD (Default)"},
+        {"value": 2, "label": "GZ055BE1"},
+    ],
+    "TOSHIBA_AC": [
+        {"value": 0, "label": "Generic A (Default)"},
+        {"value": 1, "label": "Generic B"},
+    ],
+    "VOLTAS": [
+        {"value": 0, "label": "Unknown (Full Function)"},
+        {"value": 1, "label": "122LZF (Default)"},
+    ],
+    "WHIRLPOOL_AC": [
+        {"value": 1, "label": "DG11J13A (Default)"},
+        {"value": 2, "label": "DG11J191"},
+    ],
+}
+
+
+def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str, int | str]]]:
+    """Return known model enums, optionally filtered to one protocol.
+
+    Each model entry: ``{"value": <int>, "label": "<human name>"}``.
+    Returns the full dict when ``protocol`` is None.
+    """
+    if protocol is None:
+        return dict(PROTOCOL_MODELS)
+    key = protocol.upper()
+    return {key: PROTOCOL_MODELS[key]} if key in PROTOCOL_MODELS else {key: []}
+
 
 def _get_irhvac() -> ModuleType:
     global _irhvac

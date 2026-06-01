@@ -142,6 +142,14 @@ export class HairApi {
         });
     }
 
+    /** Return model enums for protocol-based AC control (all or per-protocol). */
+    listProtocolModels(protocol?: string): Promise<{ models: Record<string, { value: number; label: string }[]> }> {
+        return this.hass.connection.sendMessagePromise<{ models: Record<string, { value: number; label: string }[]> }>({
+            type: "hair/protocol/models",
+            ...(protocol ? { protocol } : {}),
+        });
+    }
+
     /**
      * Start a capture session and stream events to ``onEvent``.
      * The returned promise resolves with the session id once the server

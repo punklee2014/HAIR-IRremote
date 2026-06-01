@@ -51,6 +51,7 @@ export class IrDeviceDetail extends LitElement {
     @state() private _irModel: number | null = null;
     @state() private _celsius: boolean = true;
     @state() private _protocols: string[] = [];
+    @state() private _modelOptions: { value: number; label: string }[] = [];
 
     // Triggers
     @state() private _triggers: IRTrigger[] = [];
@@ -234,11 +235,13 @@ export class IrDeviceDetail extends LitElement {
 
     private async _onIrProtocolChanged(e: Event) {
         this._irProtocol = (e.target as HTMLSelectElement).value || null;
+        this._irModel = null;
+        void this._loadModelOptions(this._irProtocol);
         await this._saveProtocolFields();
     }
 
     private async _onIrModelChanged(e: Event) {
-        const val = (e.target as HTMLInputElement).value;
+        const val = (e.target as HTMLSelectElement).value;
         this._irModel = val ? parseInt(val, 10) : null;
         await this._saveProtocolFields();
     }
@@ -311,6 +314,10 @@ export class IrDeviceDetail extends LitElement {
         if (this.device.device_type === "ac") {
             void this._loadProtocols();
         }
+        // Load model options if protocol is already set.
+        if (this._irProtocol) {
+            void this._loadModelOptions(this._irProtocol);
+        }
     }
 
     private async _loadProtocols() {
@@ -320,6 +327,19 @@ export class IrDeviceDetail extends LitElement {
             this._protocols = result.protocols;
         } catch {
             this._protocols = [];
+        }
+    }
+
+    private async _loadModelOptions(protocol: string | null) {
+        if (!protocol) {
+            this._modelOptions = [];
+            return;
+        }
+        try {
+            const result = await this.api.listProtocolModels(protocol);
+            this._modelOptions = result.models[protocol.toUpperCase()] ?? [];
+        } catch {
+            this._modelOptions = [];
         }
     }
 
@@ -689,14 +709,39 @@ export class IrDeviceDetail extends LitElement {
                                 </div>
                                 <span class="meta-label">Model</span>
                                 <div class="meta-value">
-                                    <input
-                                        type="number"
-                                        .value=${this._irModel != null ? String(this._irModel) : ""}
-                                        placeholder="1 (default)"
-                                        ?disabled=${this._busy}
-                                        @input=${this._onIrModelChanged}
-                                        min="1"
-                                    />
+                                    ${this._modelOptions.length > 0
+                                        ? html`
+                                            <select
+                                                .value=${this._irModel != null ? String(this._irModel) : ""}
+                                                ?disabled=${this._busy}
+                                                @change=${this._onIrModelChanged}
+                                            >
+                                                ${this._modelOptions.map(
+                                                    (m) => html`
+                                                        <option
+                                                            value=${String(m.value)}
+                                                            ?selected=${this._irModel === m.value}
+                                                        >
+                                                            ${m.label}
+                                                        </option>
+                                                    `,
+                                                )}
+                                            </select>
+                                        `
+                                        : html`
+                                            <input
+                                                type="number"
+                                                .value=${this._irModel != null ? String(this._irModel) : ""}
+                                                placeholder="1 (default)"
+                                                ?disabled=${this._busy}
+                                                @input=${(e: Event) => {
+                                                    const val = (e.target as HTMLInputElement).value;
+                                                    this._irModel = val ? parseInt(val, 10) : null;
+                                                    void this._saveProtocolFields();
+                                                }}
+                                                min="1"
+                                            />
+                                        `}
                                 </div>
                                 <span class="meta-label">Unit</span>
                                 <div class="meta-value">

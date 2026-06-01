@@ -60,6 +60,7 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
 
     # Protocol AC
     websocket_api.async_register_command(hass, ws_get_protocols)
+    websocket_api.async_register_command(hass, ws_get_protocol_models)
 
     # Signal Monitor (unknown devices)
     websocket_api.async_register_command(hass, ws_get_unknown_devices)
@@ -605,6 +606,25 @@ async def ws_get_protocols(
         ]
 
     connection.send_result(msg["id"], {"protocols": protocols})
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{WS_PREFIX}/protocol/models",
+    vol.Optional("protocol"): str,
+})
+@websocket_api.async_response
+async def ws_get_protocol_models(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return model enum values for one or all protocols."""
+    from .encoder.irremote_ac import get_protocol_models
+
+    proto = msg.get("protocol")
+    models = get_protocol_models(proto)
+    connection.send_result(msg["id"], {"models": models})
 
 
 # --- Signal Monitor (Unknown Devices) ---

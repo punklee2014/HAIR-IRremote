@@ -42,6 +42,7 @@ export class IrAddDeviceDialog extends LitElement {
     @state() private _irProtocol: string | null = null;
     @state() private _irModel: number | null = null;
     @state() private _protocols: string[] = [];
+    @state() private _modelOptions: { value: number; label: string }[] = [];
 
     connectedCallback(): void {
         super.connectedCallback();
@@ -63,6 +64,19 @@ export class IrAddDeviceDialog extends LitElement {
             this._protocols = result.protocols;
         } catch {
             this._protocols = [];
+        }
+    }
+
+    private async _loadModelOptions(protocol: string | null) {
+        if (!protocol) {
+            this._modelOptions = [];
+            return;
+        }
+        try {
+            const result = await this.api.listProtocolModels(protocol);
+            this._modelOptions = result.models[protocol.toUpperCase()] ?? [];
+        } catch {
+            this._modelOptions = [];
         }
     }
 
@@ -200,8 +214,12 @@ export class IrAddDeviceDialog extends LitElement {
                                     <label>IR Protocol</label>
                                     <select
                                         .value=${this._irProtocol || ""}
-                                        @change=${(e: Event) =>
-                                            (this._irProtocol = (e.target as HTMLSelectElement).value || null)}
+                                        @change=${(e: Event) => {
+                                            const val = (e.target as HTMLSelectElement).value || null;
+                                            this._irProtocol = val;
+                                            this._irModel = null;
+                                            void this._loadModelOptions(val);
+                                        }}
                                     >
                                         <option value="">-- Select protocol --</option>
                                         ${this._protocols.map(
@@ -216,19 +234,47 @@ export class IrAddDeviceDialog extends LitElement {
                                         )}
                                     </select>
                                 </div>
-                                <div class="field">
-                                    <label>Model (optional)</label>
-                                    <input
-                                        type="number"
-                                        .value=${this._irModel != null ? String(this._irModel) : ""}
-                                        placeholder="1 = default model"
-                                        min="1"
-                                        @input=${(e: Event) =>
-                                            (this._irModel = (e.target as HTMLInputElement).value
-                                                ? parseInt((e.target as HTMLInputElement).value, 10)
-                                                : null)}
-                                    />
-                                </div>
+                                ${this._modelOptions.length > 0
+                                    ? html`
+                                        <div class="field">
+                                            <label>Model</label>
+                                            <select
+                                                .value=${this._irModel != null ? String(this._irModel) : ""}
+                                                @change=${(e: Event) =>
+                                                    (this._irModel = (e.target as HTMLSelectElement).value
+                                                        ? parseInt((e.target as HTMLSelectElement).value, 10)
+                                                        : null)}
+                                            >
+                                                ${this._modelOptions.map(
+                                                    (m) => html`
+                                                        <option
+                                                            value=${String(m.value)}
+                                                            ?selected=${this._irModel === m.value}
+                                                        >
+                                                            ${m.label}
+                                                        </option>
+                                                    `,
+                                                )}
+                                            </select>
+                                        </div>
+                                    `
+                                    : this._irProtocol
+                                        ? html`
+                                            <div class="field">
+                                                <label>Model</label>
+                                                <input
+                                                    type="number"
+                                                    .value=${this._irModel != null ? String(this._irModel) : ""}
+                                                    placeholder="1 = default model"
+                                                    min="1"
+                                                    @input=${(e: Event) =>
+                                                        (this._irModel = (e.target as HTMLInputElement).value
+                                                            ? parseInt((e.target as HTMLInputElement).value, 10)
+                                                            : null)}
+                                                />
+                                            </div>
+                                        `
+                                        : ""}
                             `
                             : ""}
                     `
