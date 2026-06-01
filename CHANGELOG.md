@@ -5,7 +5,7 @@ All notable changes to HAIR-IRremote will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0-alpha] - 2026-05-31
+## [0.2.0-alpha] - 2026-06-01
 
 ### Added
 
@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AcControlMode` enum (`learned` / `protocol`) on IRDevice, with storage migration to v1.2.
 - `device_manager.async_send_raw_timings()` for sending encoded AC timings through the infrared platform.
 - Climate entity PROTOCOL branch: full temperature range (16–30°C), all HVAC modes, fan modes, Celsius support.
-- WebSocket API: protocol AC fields on create/update device, `hair/protocols` command to list available protocols.
-- Frontend: AC device wizard now offers Learned vs Protocol mode with protocol picker.
+- WebSocket API: protocol AC fields on create/update device, `hair/protocols` and `hair/protocol/models` commands.
+- Frontend: AC device wizard now offers Learned vs Protocol mode with protocol picker and **model enum dropdown** (14 protocols with named models).
 - Build infrastructure: `build/build_irhvac.sh`, `build/docker/Dockerfile.irhvac`, CI matrix for native builds.
 - ESPHome `ir_rf_proxy` transmit example.
 
