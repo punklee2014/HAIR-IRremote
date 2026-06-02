@@ -156,6 +156,14 @@ class HAIRClimateEntity(ClimateEntity):
         return features
 
     @property
+    def precision(self) -> float:
+        return 1.0
+
+    @property
+    def target_temperature_step(self) -> float:
+        return 1.0
+
+    @property
     def hvac_modes(self) -> list[HVACMode]:
         if self._is_protocol:
             return list(PROTOCOL_HVAC_MODES)
