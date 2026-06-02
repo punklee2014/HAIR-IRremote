@@ -174,12 +174,25 @@ class DeviceManager:
         if command is None:
             raise KeyError(f"Unknown command {command_id} on device {device_id}")
 
+        timings = command.raw_timings or []
+        protocol = command.protocol
+        code = command.code
+
+        # If no timings but we have a Pronto hex code, let build_command
+        # parse it into timings.
+        if not timings and protocol and code:
+            await self.async_send_raw_timings(
+                device_id, [],
+                frequency=command.frequency or 38000,
+                protocol=protocol,
+                code=code,
+            )
+            return
+
         await self.async_send_raw_timings(
             device_id,
-            command.raw_timings or [],
+            timings,
             frequency=command.frequency or 38000,
-            protocol=command.protocol,
-            code=command.code,
         )
 
     async def async_send_raw_timings(
@@ -205,8 +218,15 @@ class DeviceManager:
             raise RuntimeError(f"Device {device_id} has no emitters configured")
 
         if not timings:
-            _LOGGER.warning("async_send_raw_timings called with empty timings for %s", device_id)
-            return
+            # Try Pronto fallback: if we have protocol+code but no timings,
+            # let build_command parse the hex code into timings.
+            proto = kwargs.get("protocol") if kwargs else None
+            code = kwargs.get("code") if kwargs else None
+            if proto and code:
+                _LOGGER.debug("Using Pronto fallback for %s: protocol=%s", device_id, proto)
+            else:
+                _LOGGER.warning("async_send_raw_timings called with empty timings for %s", device_id)
+                return
 
         _LOGGER.debug("async_send_raw_timings: %d timings, frequency=%d, emitters=%s",
                       len(timings), frequency, device.emitter_entity_ids)
