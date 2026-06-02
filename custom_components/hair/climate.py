@@ -379,9 +379,6 @@ class HAIRClimateEntity(ClimateEntity):
                 )
                 self._swing_mode = swing_mode
                 self.async_write_ha_state()
-
-    @property
-    def swing_mode(self) -> str | None:
         return self._swing_mode
 
     # ------------------------------------------------------------------
