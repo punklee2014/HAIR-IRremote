@@ -374,6 +374,9 @@ class HAIRClimateEntity(ClimateEntity):
     def update_device(self, device: IRDevice) -> None:
         self._device = device
         self.async_write_ha_state()
+        _LOGGER.debug("Climate entity updated: ac_control_mode=%s ir_protocol=%s",
+                      getattr(device, 'ac_control_mode', '?'),
+                      getattr(device, 'ir_protocol', None))
 
     # ------------------------------------------------------------------
     # Internal: send learned command by feature key
