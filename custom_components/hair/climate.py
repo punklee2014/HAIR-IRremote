@@ -156,11 +156,11 @@ class HAIRClimateEntity(ClimateEntity):
         return features
 
     @property
-    def precision(self) -> float:
+    def target_temperature_step(self) -> float:
         return 1.0
 
     @property
-    def target_temperature_step(self) -> float:
+    def precision(self) -> float:
         return 1.0
 
     @property
@@ -250,6 +250,10 @@ class HAIRClimateEntity(ClimateEntity):
 
         from .encoder.irremote_ac import encode as ac_encode
 
+        _LOGGER.info(
+            "Sending protocol AC command: power=%s mode=%s temp=%s fan=%s device=%s",
+            power, mode, temp, fan_mode, self._device.name,
+        )
         timings = ac_encode(
             self._device,
             power=power,
