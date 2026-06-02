@@ -205,6 +205,9 @@ class DeviceManager:
             _LOGGER.warning("async_send_raw_timings called with empty timings for %s", device_id)
             return
 
+        _LOGGER.info("async_send_raw_timings: %d timings, frequency=%d, emitters=%s",
+                      len(timings), frequency, device.emitter_entity_ids)
+
         from homeassistant.components.infrared import (
             async_send_command as ir_send,
         )
