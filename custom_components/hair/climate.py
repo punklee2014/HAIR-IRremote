@@ -109,6 +109,13 @@ class HAIRClimateEntity(ClimateEntity):
         self._target_temperature: float | None = None
         self._fan_mode: str | None = None
         self._swing_mode: str | None = None
+        _LOGGER.info(
+            "HAIRClimateEntity created: device=%s ac_control_mode=%s ir_protocol=%s is_protocol=%s",
+            device.name,
+            getattr(device, 'ac_control_mode', '?'),
+            getattr(device, 'ir_protocol', None),
+            self._is_protocol,
+        )
 
     # ------------------------------------------------------------------
     # Protocol helper
