@@ -231,6 +231,31 @@ class HAIRClimateEntity(ClimateEntity):
             return 1.0
         return 1.0
 
+    @property
+    def hvac_mode(self) -> HVACMode:
+        if self._is_protocol:
+            return self._hvac_mode
+        # Preset mode: call parent property or fallback to _hvac_mode
+        return self._hvac_mode
+
+    @property
+    def target_temperature(self) -> float | None:
+        if self._is_protocol:
+            return self._target_temperature
+        return self._target_temperature
+
+    @property
+    def fan_mode(self) -> str | None:
+        if self._is_protocol:
+            return self._fan_mode
+        return self._fan_mode
+
+    @property
+    def swing_mode(self) -> str | None:
+        if self._is_protocol:
+            return self._swing_mode
+        return self._swing_mode
+
     # ------------------------------------------------------------------
     # State
     # ------------------------------------------------------------------
