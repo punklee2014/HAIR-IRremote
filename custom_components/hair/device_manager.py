@@ -178,6 +178,8 @@ class DeviceManager:
             device_id,
             command.raw_timings or [],
             frequency=command.frequency or 38000,
+            protocol=command.protocol,
+            code=command.code,
         )
 
     async def async_send_raw_timings(
@@ -185,6 +187,7 @@ class DeviceManager:
         device_id: str,
         timings: list[int],
         frequency: int = 38000,
+        **kwargs: Any,
     ) -> None:
         """Send raw IR timings via all configured emitters (broadcast).
 
@@ -205,7 +208,7 @@ class DeviceManager:
             _LOGGER.warning("async_send_raw_timings called with empty timings for %s", device_id)
             return
 
-        _LOGGER.info("async_send_raw_timings: %d timings, frequency=%d, emitters=%s",
+        _LOGGER.debug("async_send_raw_timings: %d timings, frequency=%d, emitters=%s",
                       len(timings), frequency, device.emitter_entity_ids)
 
         from homeassistant.components.infrared import (
@@ -217,6 +220,8 @@ class DeviceManager:
         ir_cmd = build_command(
             raw_timings=timings,
             frequency=frequency,
+            protocol=kwargs.get("protocol") if kwargs else None,
+            code=kwargs.get("code") if kwargs else None,
         )
 
         for emitter_id in device.emitter_entity_ids:
