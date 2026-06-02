@@ -254,6 +254,25 @@ class TestClimateProtocolBranch:
         assert call_kwargs["power"] is True
         assert call_kwargs["hvac_mode"] == "cool"
 
+    @pytest.mark.asyncio
+    async def test_protocol_import_error_raises_homeassistant_error(
+        self, mock_manager
+    ) -> None:
+        """Protocol control surfaces a user-facing runtime error."""
+        from custom_components.hair.climate import HAIRClimateEntity
+        from homeassistant.components.climate import HVACMode
+
+        device = make_protocol_device()
+        entity = HAIRClimateEntity(device, mock_manager)
+        _patch_write_state(entity)
+
+        with patch(
+            "custom_components.hair.encoder.irremote_ac.encode",
+            side_effect=ImportError("missing ld-linux-aarch64.so.1"),
+        ):
+            with pytest.raises(RuntimeError, match="missing ld-linux"):
+                await entity.async_set_hvac_mode(HVACMode.COOL)
+
     def test_protocol_hvac_modes(self) -> None:
         """Protocol mode exposes all standard HVAC modes."""
         from custom_components.hair.climate import HAIRClimateEntity

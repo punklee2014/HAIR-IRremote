@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, DeviceType
+from .const import DOMAIN, DeviceType, normalize_device_type
 from .models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,9 +70,11 @@ class EntityFactory:
             hooks["on_update"] = on_update
 
     def get_platform_for_device(self, device: IRDevice) -> str:
-        return DEVICE_TYPE_TO_PLATFORM.get(
-            str(device.device_type), "remote"
-        )
+        try:
+            normalized = normalize_device_type(str(device.device_type))
+        except ValueError:
+            return "remote"
+        return DEVICE_TYPE_TO_PLATFORM.get(str(normalized), "remote")
 
     # Platforms listed here receive callbacks for EVERY device,
     # regardless of device type.  Used by "remote" and "button".

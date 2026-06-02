@@ -449,9 +449,9 @@ class SignalMonitor:
         from .models import (
             CaptureResult,
             CommandCategory,
-            DeviceType,
             IRDevice,
         )
+        from .const import normalize_device_type
 
         async with self._lock:
             # Validate source signal.
@@ -466,7 +466,7 @@ class SignalMonitor:
 
             # Validate device type.
             try:
-                dtype = DeviceType(device_type)
+                dtype = normalize_device_type(device_type)
             except ValueError:
                 return {"success": False, "code": "invalid_device_type",
                         "error": f"Invalid device type: {device_type}"}

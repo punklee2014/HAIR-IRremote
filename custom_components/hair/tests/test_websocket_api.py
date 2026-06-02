@@ -61,6 +61,8 @@ def _wire_hass(hass, manager=None, orchestrator=None, signal_monitor=None):
         "device_manager": manager or MagicMock(),
         "orchestrator": orchestrator or MagicMock(),
         "signal_monitor": signal_monitor or MagicMock(),
+        "protocol_encoder_available": True,
+        "protocol_encoder_error": None,
     }
     hass.data[DOMAIN] = {"entry-1": entry_data}
 
@@ -200,6 +202,31 @@ async def test_create_device_invalid_type(fake_hass):
     )
     conn.send_error.assert_called_once()
     assert conn.send_error.call_args[0][1] == "invalid_format"
+
+
+@pytest.mark.asyncio
+async def test_create_device_accepts_climate_alias(fake_hass):
+    manager = MagicMock()
+    manager.async_create_device = AsyncMock(side_effect=lambda d: d)
+    _wire_hass(fake_hass, manager=manager)
+
+    conn = _make_connection()
+    await ws_create_device(
+        fake_hass,
+        conn,
+        {
+            "id": 31,
+            "type": "hair/device/create",
+            "name": "Living Room AC",
+            "device_type": "climate",
+            "emitter_entity_ids": ["infrared.test"],
+            "ac_control_mode": "protocol",
+            "ir_protocol": "MIDEA",
+        },
+    )
+    conn.send_result.assert_called_once()
+    result = conn.send_result.call_args[0][1]
+    assert result["device_type"] == "ac"
 
 
 # ---------------------------------------------------------------------------

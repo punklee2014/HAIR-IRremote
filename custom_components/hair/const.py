@@ -86,6 +86,27 @@ class DeviceType(StrEnum):
     OTHER = "other"
 
 
+def normalize_device_type(value: str | DeviceType) -> DeviceType:
+    """Normalize external device type aliases to ``DeviceType``.
+
+    Accepts legacy and UI-facing aliases (e.g. ``climate`` -> ``ac``) so
+    mixed frontend/backend versions still create the correct HA platform
+    entities.
+    """
+    if isinstance(value, DeviceType):
+        return value
+    lowered = value.casefold()
+    aliases = {
+        "climate": DeviceType.AC,
+        "air_conditioner": DeviceType.AC,
+        "air conditioner": DeviceType.AC,
+    }
+    mapped = aliases.get(lowered)
+    if mapped is not None:
+        return mapped
+    return DeviceType(value)
+
+
 class CommandCategory(StrEnum):
     """IR command categories."""
 

@@ -25,6 +25,7 @@ from .const import (
     CaptureState,
     CommandCategory,
     DeviceType,
+    normalize_device_type,
 )
 from .device_manager import DeviceManager, category_for_command_name
 from .models import IRDevice, IRTrigger
@@ -84,6 +85,18 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_update_trigger)
     websocket_api.async_register_command(hass, ws_delete_trigger)
     websocket_api.async_register_command(hass, ws_subscribe_triggers)
+
+
+def _protocol_encoder_available(data: dict[str, Any]) -> bool:
+    return bool(data.get("protocol_encoder_available"))
+
+
+def _protocol_encoder_error_message(data: dict[str, Any]) -> str:
+    detail = data.get("protocol_encoder_error") or "unknown error"
+    return (
+        "Protocol AC encoder is not available on this Home Assistant host. "
+        f"{detail}"
+    )
 
 
 def _get_first_entry_data(hass: HomeAssistant) -> dict[str, Any] | None:
@@ -192,7 +205,7 @@ async def ws_create_device(
     manager: DeviceManager = data["device_manager"]
 
     try:
-        device_type = DeviceType(msg["device_type"])
+        device_type = normalize_device_type(msg["device_type"])
     except ValueError:
         connection.send_error(msg["id"], "invalid_format", "Unknown device_type")
         return
@@ -206,6 +219,19 @@ async def ws_create_device(
         )
         return
 
+    ac_mode = msg.get("ac_control_mode", "learned")
+    if (
+        device_type == DeviceType.AC
+        and ac_mode == "protocol"
+        and not _protocol_encoder_available(data)
+    ):
+        connection.send_error(
+            msg["id"],
+            "protocol_unavailable",
+            _protocol_encoder_error_message(data),
+        )
+        return
+
     device = IRDevice(
         name=msg["name"],
         device_type=device_type,
@@ -214,7 +240,7 @@ async def ws_create_device(
         emitter_entity_ids=list(msg["emitter_entity_ids"]),
         capture_device_id=msg.get("capture_device_id"),
         capture_provider_type=provider_type,
-        ac_control_mode=msg.get("ac_control_mode", "learned"),
+        ac_control_mode=ac_mode,
         ir_protocol=msg.get("ir_protocol"),
         ir_model=msg.get("ir_model"),
         celsius=msg.get("celsius", True),
@@ -262,7 +288,13 @@ async def ws_update_device(
     if "emitter_entity_ids" in msg:
         device.emitter_entity_ids = list(msg["emitter_entity_ids"])
     if "device_type" in msg:
-        device.device_type = DeviceType(msg["device_type"])
+        try:
+            device.device_type = normalize_device_type(msg["device_type"])
+        except ValueError:
+            connection.send_error(
+                msg["id"], "invalid_format", "Unknown device_type"
+            )
+            return
     if "ac_control_mode" in msg:
         device.ac_control_mode = msg["ac_control_mode"]
     if "ir_protocol" in msg:

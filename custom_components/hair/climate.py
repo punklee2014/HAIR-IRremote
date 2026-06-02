@@ -271,14 +271,22 @@ class HAIRClimateEntity(ClimateEntity):
             "Sending protocol AC command: power=%s mode=%s temp=%s fan=%s swing=%s device=%s",
             power, mode, temp, fan_mode, swing_mode, self._device.name,
         )
-        timings = ac_encode(
-            self._device,
-            power=power,
-            hvac_mode=mode,
-            temperature=temp,
-            fan_mode=fan_mode or self._fan_mode,
-            swing_mode=swing_mode or self._swing_mode,
-        )
+        try:
+            timings = ac_encode(
+                self._device,
+                power=power,
+                hvac_mode=mode,
+                temperature=temp,
+                fan_mode=fan_mode or self._fan_mode,
+                swing_mode=swing_mode or self._swing_mode,
+            )
+        except ImportError as err:
+            _LOGGER.error(
+                "Protocol AC unavailable on %s: %s",
+                self._device.name,
+                err,
+            )
+            raise RuntimeError(str(err)) from err
         await self._manager.async_send_raw_timings(
             self._device.id, timings
         )

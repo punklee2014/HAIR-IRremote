@@ -14,6 +14,7 @@ from .const import (
     CommandCategory,
     CommandSource,
     DeviceType,
+    normalize_device_type,
 )
 
 
@@ -213,10 +214,15 @@ class IRDevice:
         if raw_type in _LEGACY_MEDIA_TYPES:
             raw_type = "media_player"
 
+        try:
+            normalized_type = normalize_device_type(str(raw_type))
+        except ValueError:
+            normalized_type = DeviceType.OTHER
+
         return cls(
             id=data.get("id") or _new_id(),
             name=data.get("name", ""),
-            device_type=DeviceType(raw_type),
+            device_type=normalized_type,
             manufacturer=data.get("manufacturer"),
             model=data.get("model"),
             emitter_entity_ids=list(data.get("emitter_entity_ids") or []),

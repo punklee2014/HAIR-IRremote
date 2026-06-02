@@ -72,6 +72,17 @@ async def async_setup_entry(
     trigger_manager = TriggerManager(hass, store)
     signal_monitor = SignalMonitor(hass, signal_store, store, trigger_manager)
 
+    from .encoder.irremote_ac import probe_protocol_encoder
+
+    protocol_ok, protocol_err = probe_protocol_encoder()
+    if not protocol_ok:
+        _LOGGER.warning(
+            "Protocol AC encoder unavailable on this host: %s. "
+            "Devices in Protocol mode cannot send IR until "
+            "linux_<arch>_musl/_irhvac.so is installed or you use Learned mode.",
+            protocol_err,
+        )
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "store": store,
@@ -82,6 +93,8 @@ async def async_setup_entry(
         "signal_monitor": signal_monitor,
         "trigger_manager": trigger_manager,
         "config_entry": entry,
+        "protocol_encoder_available": protocol_ok,
+        "protocol_encoder_error": protocol_err,
     }
 
     async_register_websocket_commands(hass)

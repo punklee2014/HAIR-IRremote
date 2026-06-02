@@ -1,0 +1,19 @@
+# musl (Alpine) build for _irhvac.so — for HA on Alpine / musl libc.
+#
+#   docker build -f build/docker/Dockerfile.irhvac.musl -t irhvac-builder:musl .
+#   docker run --rm -v $(pwd):/workspace irhvac-builder:musl \
+#     bash ./build/build_irhvac.sh aarch64 custom_components/hair/native/linux_aarch64_musl
+#
+FROM alpine:3.20
+
+RUN apk add --no-cache \
+    bash \
+    g++ \
+    make \
+    python3-dev \
+    swig \
+    curl \
+    ca-certificates \
+    pcre2-dev
+
+WORKDIR /workspace

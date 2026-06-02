@@ -185,3 +185,10 @@ def test_legacy_device_type_migration():
         data = {"name": "Test", "device_type": legacy_type}
         device = IRDevice.from_dict(data)
         assert device.device_type == DeviceType.MEDIA_PLAYER
+
+
+def test_climate_alias_migration():
+    """Loading 'climate' from dict produces AC device type."""
+    data = {"name": "Test AC", "device_type": "climate"}
+    device = IRDevice.from_dict(data)
+    assert device.device_type == DeviceType.AC

@@ -26,6 +26,13 @@ _MODE_MAP: dict[str, int] = {}
 # Fan mode → irhvac fanspeed_t constant.
 _FAN_MAP: dict[str, int] = {}
 
+
+class IRHVACUnavailableError(ImportError):
+    """Raised when the native irhvac module cannot be loaded."""
+
+
+_encoder_probe: tuple[bool, str | None] | None = None
+
 # ---------------------------------------------------------------------------
 # Protocol-to-model lookup table.
 # Built from the C++ enums in vendor/IRremoteESP8266/src/IRsend.h.
@@ -106,6 +113,24 @@ PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
 }
 
 
+def probe_protocol_encoder() -> tuple[bool, str | None]:
+    """Try loading ``_irhvac.so`` once; cache result for this process."""
+    global _encoder_probe
+    if _encoder_probe is not None:
+        return _encoder_probe
+    try:
+        _get_irhvac()
+        _encoder_probe = (True, None)
+    except ImportError as exc:
+        _encoder_probe = (False, str(exc))
+    return _encoder_probe
+
+
+def is_protocol_encoder_available() -> bool:
+    """Return True if protocol-based AC encoding can run on this host."""
+    return probe_protocol_encoder()[0]
+
+
 def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str, int | str]]]:
     """Return known model enums, optionally filtered to one protocol.
 
@@ -118,12 +143,29 @@ def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str,
     return {key: PROTOCOL_MODELS[key]} if key in PROTOCOL_MODELS else {key: []}
 
 
+def _is_musl_runtime_error(message: str) -> bool:
+    return "linux_aarch64_musl" in message or "musl build" in message
+
+
 def _get_irhvac() -> ModuleType:
     global _irhvac
     if _irhvac is None:
         from .loader import load_irhvac
-
-        _irhvac = load_irhvac()
+        try:
+            _irhvac = load_irhvac()
+        except ImportError as exc:
+            message = str(exc)
+            # Common on Alpine/musl systems when loading glibc-linked binaries.
+            if "ld-linux-aarch64.so.1" in message or _is_musl_runtime_error(message):
+                raise IRHVACUnavailableError(
+                    "Protocol encoder needs the musl build "
+                    "(native/linux_aarch64_musl/_irhvac.so) on this HA host. "
+                    f"{message}"
+                ) from exc
+            raise IRHVACUnavailableError(
+                "Failed to load protocol encoder native library (irhvac): "
+                f"{message}"
+            ) from exc
         _build_maps(_irhvac)
     return _irhvac
 

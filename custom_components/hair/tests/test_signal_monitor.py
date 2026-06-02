@@ -897,6 +897,24 @@ class TestAssignToNewDevice:
         assert result["code"] == "invalid_device_type"
 
     @pytest.mark.asyncio
+    async def test_climate_alias_maps_to_ac(self):
+        hass = _make_hass()
+        store = _make_signal_store(hass)
+        hair_store = _make_hair_store()
+        monitor = SignalMonitor(hass, store, hair_store)
+
+        sig = UnknownSignal(fingerprint="sig_fp", protocol="NEC", code="0x1")
+        device = UnknownDevice(id="ud1", fingerprint="fp", signals=[sig])
+        store.add_device(device)
+
+        result = await monitor.assign_to_new_device(
+            "ud1", "sig_fp", "AC", "climate",
+            ["remote.ir"], "Power", "power",
+        )
+        assert result["success"] is True
+        assert result["device"].device_type == "ac"
+
+    @pytest.mark.asyncio
     async def test_rollback_on_hair_store_failure(self):
         hass = _make_hass()
         store = _make_signal_store(hass)
