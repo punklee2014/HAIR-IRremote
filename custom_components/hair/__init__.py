@@ -115,11 +115,11 @@ async def _async_register_panel(
         Path(__file__).parent / "frontend" / "dist" / PANEL_FILENAME
     )
 
-    # Compute content hash for cache busting.
+    # Compute content hash for cache busting (defer to executor thread).
     content_hash = ""
     try:
         if bundle_path.exists():
-            raw = bundle_path.read_bytes()
+            raw = await hass.async_add_executor_job(bundle_path.read_bytes)
             content_hash = hashlib.md5(raw).hexdigest()[:8]
     except (OSError, TypeError):
         content_hash = ""
