@@ -108,6 +108,7 @@ class HAIRClimateEntity(ClimateEntity):
         self._hvac_mode = HVACMode.OFF
         self._target_temperature: float | None = None
         self._fan_mode: str | None = None
+        self._swing_mode: str | None = None
 
     # ------------------------------------------------------------------
     # Protocol helper
@@ -147,11 +148,14 @@ class HAIRClimateEntity(ClimateEntity):
         if self._is_protocol:
             features |= ClimateEntityFeature.TARGET_TEMPERATURE
             features |= ClimateEntityFeature.FAN_MODE
+            features |= ClimateEntityFeature.SWING_MODE
         else:
             if config.fan_modes:
                 features |= ClimateEntityFeature.FAN_MODE
             if config.temperature_presets:
                 features |= ClimateEntityFeature.TARGET_TEMPERATURE
+            if config.swing_modes:
+                features |= ClimateEntityFeature.SWING_MODE
 
         return features
 
@@ -183,6 +187,12 @@ class HAIRClimateEntity(ClimateEntity):
         if self._is_protocol:
             return list(PROTOCOL_FAN_MODES)
         return list(self._device.entity_config.fan_modes or []) or None
+
+    @property
+    def swing_modes(self) -> list[str] | None:
+        if self._is_protocol:
+            return ["off", "vertical", "horizontal", "both"]
+        return list(self._device.entity_config.swing_modes or []) or None
 
     @property
     def temperature_unit(self) -> str:
@@ -241,6 +251,7 @@ class HAIRClimateEntity(ClimateEntity):
         hvac_mode: str | None = None,
         temperature: float | None = None,
         fan_mode: str | None = None,
+        swing_mode: str | None = None,
     ) -> None:
         mode = hvac_mode or self._hvac_mode or HVACMode.AUTO
         if isinstance(mode, HVACMode):
@@ -251,8 +262,8 @@ class HAIRClimateEntity(ClimateEntity):
         from .encoder.irremote_ac import encode as ac_encode
 
         _LOGGER.info(
-            "Sending protocol AC command: power=%s mode=%s temp=%s fan=%s device=%s",
-            power, mode, temp, fan_mode, self._device.name,
+            "Sending protocol AC command: power=%s mode=%s temp=%s fan=%s swing=%s device=%s",
+            power, mode, temp, fan_mode, swing_mode, self._device.name,
         )
         timings = ac_encode(
             self._device,
@@ -260,6 +271,7 @@ class HAIRClimateEntity(ClimateEntity):
             hvac_mode=mode,
             temperature=temp,
             fan_mode=fan_mode or self._fan_mode,
+            swing_mode=swing_mode or self._swing_mode,
         )
         await self._manager.async_send_raw_timings(
             self._device.id, timings
@@ -337,6 +349,34 @@ class HAIRClimateEntity(ClimateEntity):
         if feature and await self._send(feature):
             self._fan_mode = fan_mode
             self.async_write_ha_state()
+
+    # ------------------------------------------------------------------
+    # Swing mode
+    # ------------------------------------------------------------------
+
+    async def async_set_swing_mode(self, swing_mode: str) -> None:
+        if self._is_protocol:
+            self._swing_mode = swing_mode
+            await self._send_protocol(swing_mode=swing_mode)
+            self.async_write_ha_state()
+            return
+
+        # Learned mode (original logic).
+        feature = f"swing_{swing_mode}"
+        mapping = self._device.entity_config.command_mapping
+        command_name = mapping.get(feature) or mapping.get("swing_toggle")
+        if command_name:
+            command = self._device.get_command_by_name(command_name)
+            if command is not None:
+                await self._manager.async_send_command(
+                    self._device.id, command.id
+                )
+                self._swing_mode = swing_mode
+                self.async_write_ha_state()
+
+    @property
+    def swing_mode(self) -> str | None:
+        return self._swing_mode
 
     # ------------------------------------------------------------------
     # Power on / off

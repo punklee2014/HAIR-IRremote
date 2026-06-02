@@ -164,6 +164,7 @@ def encode(
     hvac_mode: str = "auto",
     temperature: float | None = None,
     fan_mode: str | None = None,
+    swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
     """Encode an AC state as raw IR timings (signed microseconds).
@@ -174,6 +175,7 @@ def encode(
         hvac_mode: One of ``auto``, ``cool``, ``heat``, ``dry``, ``fan_only``.
         temperature: Target temperature in Celsius (e.g. 24).
         fan_mode: One of ``auto``, ``low``, ``medium``, ``high``.
+        swing_mode: One of ``off``, ``vertical``, ``horizontal``, ``both``.
 
     Returns:
         ``list[int]`` of signed microsecond timings (positive=mark,
@@ -206,6 +208,15 @@ def encode(
             ac.next.degrees = round(temperature)
         if fan_mode and fan_mode in _FAN_MAP:
             ac.next.fanspeed = _FAN_MAP[fan_mode]
+        # Swing mapping: off/vertical/horizontal/both.
+        if swing_mode:
+            if swing_mode in ("vertical", "on"):
+                ac.next.swingv = getattr(irhvac, "swingv_t_kAuto", 0)
+            elif swing_mode in ("horizontal",):
+                ac.next.swingh = getattr(irhvac, "swingh_t_kAuto", 0)
+            elif swing_mode in ("both",):
+                ac.next.swingv = getattr(irhvac, "swingv_t_kAuto", 0)
+                ac.next.swingh = getattr(irhvac, "swingh_t_kAuto", 0)
     else:
         ac.next.power = 0
 
