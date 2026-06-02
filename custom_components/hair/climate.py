@@ -245,22 +245,6 @@ class HAIRClimateEntity(ClimateEntity):
     def swing_mode(self) -> str | None:
         return self._swing_mode
 
-    def get_state(self) -> dict[str, Any]:
-        """Return the entity state as a dict for HA state event."""
-        return {
-            "hvac_mode": self.hvac_mode,
-            "target_temperature": self.target_temperature,
-            "fan_mode": self.fan_mode,
-            "swing_mode": self.swing_mode,
-        }
-
-    def set_state(self, state: dict[str, Any]) -> None:
-        """Restore the entity state from a dict."""
-        self._hvac_mode = state.get("hvac_mode", self._hvac_mode)
-        self._target_temperature = state.get("target_temperature", self._target_temperature)
-        self._fan_mode = state.get("fan_mode", self._fan_mode)
-        self._swing_mode = state.get("swing_mode", self._swing_mode)
-
 
     # ------------------------------------------------------------------
     # Control — protocol branch
