@@ -186,8 +186,8 @@ class HAIRClimateEntity(ClimateEntity):
 
     @property
     def temperature_unit(self) -> str:
-        if self._is_protocol and self._device.celsius:
-            return UnitOfTemperature.CELSIUS
+        if self._is_protocol:
+            return UnitOfTemperature.CELSIUS if self._device.celsius else UnitOfTemperature.FAHRENHEIT
         return UnitOfTemperature.FAHRENHEIT
 
     @property
