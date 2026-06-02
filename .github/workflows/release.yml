@@ -85,9 +85,7 @@ jobs:
 
       - name: Create release zip
         run: |
-          mkdir -p release/hair
-          cp -r custom_components/hair/* release/hair/
-          (cd release && zip -r ../hair_irremote.zip hair/)
+          (cd custom_components/hair && zip -r ../../hair_irremote.zip .)
 
       - name: Upload release
         uses: softprops/action-gh-release@v2
