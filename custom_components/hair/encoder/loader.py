@@ -103,7 +103,12 @@ def load_irhvac() -> ModuleType:
         try:
             module = _load_so_module(so_file)
         except Exception as exc:
-            errors.append(f"{so_file}: {exc}")
+            # Provide more specific error info for common failures.
+            detail = str(exc).strip()
+            if detail:
+                errors.append(f"{so_file}: {detail}")
+            else:
+                errors.append(f"{so_file}: could not load (unknown error)")
             continue
         _LOGGER.info("Loaded irhvac from %s", so_file)
         return module
