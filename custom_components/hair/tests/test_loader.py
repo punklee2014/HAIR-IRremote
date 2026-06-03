@@ -34,6 +34,10 @@ def test_load_irhvac_uses_so_file_path(tmp_path: Path) -> None:
             tmp_path,
         ),
         patch(
+            "custom_components.hair.encoder.loader.ctypes.CDLL",
+            return_value=MagicMock(),
+        ),
+        patch(
             "custom_components.hair.encoder.loader.ExtensionFileLoader",
             return_value=mock_loader,
         ) as mock_ext_ctor,
