@@ -52,7 +52,18 @@ def _load_so_module(so_file: Path) -> ModuleType:
 
     module = importlib.util.module_from_spec(spec)
     sys.modules["irhvac"] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except ImportError as exc:
+        if "PyInit_irhvac" in str(exc):
+            _LOGGER.warning("%s appears to be the wrong architecture (no PyInit_irhvac)", so_file)
+            # Try the IRremoteESP8266 test-lib approach instead
+            raise ImportError(
+                f"'{so_file}': missing PyInit_irhvac — the .so may be the wrong "
+                f"architecture for this system (trying {so_file}). "
+                f"{exc}"
+            ) from None
+        raise ImportError(f"{so_file}: {exc}") from exc
     return module
 
 
