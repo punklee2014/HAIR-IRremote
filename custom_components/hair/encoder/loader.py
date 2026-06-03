@@ -99,6 +99,7 @@ def load_irhvac() -> ModuleType:
         tried.append(str(so_file))
         if not so_file.is_file():
             errors.append(f"{so_file}: file not found")
+            _LOGGER.debug("Skipping %s (not found)", so_file)
             continue
         try:
             module = _load_so_module(so_file)
@@ -109,16 +110,20 @@ def load_irhvac() -> ModuleType:
                 errors.append(f"{so_file}: {detail}")
             else:
                 errors.append(f"{so_file}: could not load (unknown error)")
+            _LOGGER.warning("Failed to load %s: %s", so_file, detail)
             continue
         _LOGGER.info("Loaded irhvac from %s", so_file)
         return module
 
     # Build a user-friendly hint.
+    is_musl = _is_musl()
     parts: list[str] = []
-    if _is_musl():
+    if is_musl:
         parts.append(
-            "Your HA host uses musl libc. "
-            "We need a musl build. "
+            "Your HA host runs on musl libc "
+            "(no glibc dynamic linker found at /lib/ld-linux-aarch64.so.1 or "
+            "/lib64/ld-linux-x86-64.so.2). "
+            "You need the musl build. "
             "Install the musl build at "
             f"custom_components/hair/native/{arch_dir}_musl/_irhvac.so "
             "(see build/docker/Dockerfile.irhvac.musl), "
