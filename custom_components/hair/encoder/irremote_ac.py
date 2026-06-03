@@ -162,6 +162,12 @@ def _get_irhvac() -> ModuleType:
                     "(native/linux_aarch64_musl/_irhvac.so) on this HA host. "
                     f"{message}"
                 ) from exc
+            if "PyInit_irhvac" in message:
+                raise IRHVACUnavailableError(
+                    "The native encoder module (_irhvac.so) is not a valid "
+                    "Python extension for this platform "
+                    f"(missing PyInit_irhvac). {message}"
+                ) from exc
             raise IRHVACUnavailableError(
                 "Failed to load protocol encoder native library (irhvac): "
                 f"{message}"
