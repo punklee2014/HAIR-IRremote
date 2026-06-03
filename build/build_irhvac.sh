@@ -23,12 +23,18 @@ if [[ $# -eq 1 ]]; then
 fi
 
 # Patch the SWIG interface file: remove package=pyhvac so the .so exports PyInit_irhvac.
-# Must use sed -i.bak (POSIX) because Alpine/busybox sed doesn't support bare -i.
+# Using python3 for reliability — busybox sed on Alpine handles regex differently.
 SWIG_IF="$PYTHON_DIR/libirhvac.i"
-if grep -q 'package=.pyhvac.' "$SWIG_IF" 2>/dev/null; then
+if grep -qF '(package="pyhvac")' "$SWIG_IF" 2>/dev/null; then
     echo "Patching $SWIG_IF: removing package=pyhvac"
-    sed -i.bak 's/%module (package=.pyhvac.) irhvac/%module irhvac/' "$SWIG_IF"
-    rm -f "${SWIG_IF}.bak"
+    python3 -c "
+import sys
+data = open('$SWIG_IF').read()
+data = data.replace('%module (package=\"pyhvac\") irhvac', '%module irhvac')
+open('$SWIG_IF', 'w').write(data)
+print('Patched OK')
+"
+    grep '^%module' "$SWIG_IF"  # verify
 fi
 
 cd "$PYTHON_DIR"
