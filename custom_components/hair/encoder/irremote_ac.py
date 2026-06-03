@@ -166,6 +166,7 @@ def _get_irhvac() -> ModuleType:
                 "Failed to load protocol encoder native library (irhvac): "
                 f"{message}"
             ) from exc
+        _build_maps(_irhvac)
     return _irhvac
 
 
