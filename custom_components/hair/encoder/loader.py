@@ -1,12 +1,10 @@
 """Load the irhvac native module for the current platform."""
 from __future__ import annotations
 
-import ctypes
-import importlib.util
 import logging
 import platform
 import sys
-from importlib.machinery import ExtensionFileLoader
+from importlib import import_module as _stdlib_import
 from pathlib import Path
 from types import ModuleType
 
@@ -19,7 +17,6 @@ def _is_musl() -> bool:
     """Return True when the HA host likely uses musl (not glibc)."""
     if sys.platform != "linux":
         return False
-    # glibc dynamic linker present → use glibc build.
     for glibc_ld in (
         Path("/lib/ld-linux-aarch64.so.1"),
         Path("/lib64/ld-linux-x86-64.so.2"),
@@ -35,7 +32,7 @@ def _is_musl() -> bool:
 
 
 def _native_candidates(arch_dir: str) -> list[Path]:
-    """Directories to try, in order, for ``_irhvac.so``."""
+    """Directories to try, in order, for ``irhvac.py`` + ``_irhvac.so``."""
     glibc_dir = _NATIVE_DIR / arch_dir
     musl_dir = _NATIVE_DIR / f"{arch_dir}_musl"
     if _is_musl():
@@ -43,58 +40,23 @@ def _native_candidates(arch_dir: str) -> list[Path]:
     return [glibc_dir, musl_dir]
 
 
-def _load_so_module(so_file: Path) -> ModuleType:
-    """Load ``_irhvac.so`` as module ``irhvac``, trying known mangled names."""
-    for module_name in ("irhvac", "_irhvac", "pyhvac.irhvac"):
-        loader = ExtensionFileLoader(module_name, str(so_file))
-        spec = importlib.util.spec_from_loader(module_name, loader)
-        if spec is None or spec.loader is None:
-            _LOGGER.debug("Cannot create spec for %s as %s", so_file, module_name)
-            continue
-        try:
-            module = importlib.util.module_from_spec(spec)
-            sys.modules["irhvac"] = module
-            spec.loader.exec_module(module)
-            if module_name != "irhvac":
-                _LOGGER.warning(
-                    "irhvac loaded as %s (old SWIG package=pyhvac build). "
-                    "Recompile with patched libirhvac.i for correct exports.",
-                    module_name,
-                )
-            return module
-        except ImportError:
-            sys.modules.pop("irhvac", None)
-            _LOGGER.debug("Tried %s for %s, failed", module_name, so_file)
-    raise ImportError(f"Cannot load {so_file} as any known module name")
-
-
 def _get_arch_dir() -> str:
     machine = platform.machine()
-    # Normalise common aarch64 names.
     if machine in ("aarch64", "arm64", "armv8l", "armv8b"):
         return "linux_aarch64"
-    # x86_64
     if machine in ("x86_64", "amd64", "AMD64"):
         return "linux_x86_64"
-    # Best-effort fallback.
     _LOGGER.warning("Unknown platform machine: %s, trying linux_x86_64", machine)
     return "linux_x86_64"
 
 
 def load_irhvac() -> ModuleType:
-    """Load ``_irhvac.so`` as the ``irhvac`` Python module.
+    """Load the ``irhvac`` module via its SWIG wrapper.
 
-    The integration ships a prebuilt extension at::
-
-        custom_components/hair/native/linux_<arch>/_irhvac.so
-
-    (``irhvac.py`` from the SWIG build may sit beside it but is optional;
-    we load the ``.so`` directly.)
-
-    Returns the ``irhvac`` module if available.
-
-    Raises ``ImportError`` with a clear user-facing message when the native
-    module is missing or the architecture is unsupported.
+    The SWIG-generated ``irhvac.py`` imports ``_irhvac.so`` and exposes
+    ``IRac`` etc.  We add the correct native directory to ``sys.path``
+    and then ``import irhvac`` — this way the SWIG wrapper handles any
+    module-name mangling (``package=pyhvac`` ↔ bare ``irhvac``).
     """
     arch_dir = _get_arch_dir()
     candidates = _native_candidates(arch_dir)
@@ -107,24 +69,51 @@ def load_irhvac() -> ModuleType:
     )
 
     for native_path in candidates:
+        py_file = native_path / "irhvac.py"
         so_file = native_path / "_irhvac.so"
-        tried.append(str(so_file))
-        if not so_file.is_file():
-            errors.append(f"{so_file}: file not found")
-            _LOGGER.debug("Skipping %s (not found)", so_file)
+
+        # Use str() for human-readable messages.
+        tried.append(str(native_path))
+
+        if not py_file.is_file() or not so_file.is_file():
+            errors.append(
+                f"{native_path}: missing irhvac.py ({py_file.is_file()}) "
+                f"or _irhvac.so ({so_file.is_file()})"
+            )
+            _LOGGER.debug("Skipping %s (incomplete)", native_path)
             continue
+
+        # Inject this directory at front of sys.path so ``import irhvac``
+        # finds irhvac.py (which does ``import _irhvac`` internally).
+        native_str = str(native_path)
+        if native_str not in sys.path:
+            sys.path.insert(0, native_str)
+
         try:
-            module = _load_so_module(so_file)
+            # Clean up any previous failed attempt so we get a fresh import.
+            sys.modules.pop("irhvac", None)
+            sys.modules.pop("_irhvac", None)
+            sys.modules.pop("pyhvac.irhvac", None)
+            module = _stdlib_import("irhvac")
         except Exception as exc:
-            # Provide more specific error info for common failures.
-            detail = str(exc).strip()
-            if detail:
-                errors.append(f"{so_file}: {detail}")
-            else:
-                errors.append(f"{so_file}: could not load (unknown error)")
-            _LOGGER.warning("Failed to load %s: %s", so_file, detail)
+            detail = str(exc).strip() or "unknown error"
+            errors.append(f"{native_path}: {detail}")
+            _LOGGER.warning("Failed to import irhvac from %s: %s", native_path, detail)
             continue
-        _LOGGER.info("Loaded irhvac from %s", so_file)
+        finally:
+            # Don't leave the native dir permanently on sys.path.
+            if native_str in sys.path:
+                sys.path.remove(native_str)
+
+        # Verify the module is functional.
+        if not hasattr(module, "IRac"):
+            errors.append(f"{native_path}: imported but has no IRac class")
+            _LOGGER.warning("irhvac loaded from %s but missing IRac", native_path)
+            sys.modules.pop("irhvac", None)
+            sys.modules.pop("_irhvac", None)
+            continue
+
+        _LOGGER.info("Loaded irhvac from %s", native_path)
         return module
 
     # Build a user-friendly hint.
@@ -137,7 +126,7 @@ def load_irhvac() -> ModuleType:
             "/lib64/ld-linux-x86-64.so.2). "
             "You need the musl build. "
             "Install the musl build at "
-            f"custom_components/hair/native/{arch_dir}_musl/_irhvac.so "
+            f"custom_components/hair/native/{arch_dir}_musl/ "
             "(see build/docker/Dockerfile.irhvac.musl), "
             "or switch the device to Learned mode."
         )
@@ -145,7 +134,7 @@ def load_irhvac() -> ModuleType:
         parts.append(
             "Your HA host uses glibc. "
             "Download the release zip and copy "
-            f"custom_components/hair/native/{arch_dir}/_irhvac.so to your HA instance, "
+            f"custom_components/hair/native/{arch_dir}/ to your HA instance, "
             "or switch the device to Learned mode."
         )
     raise ImportError(
