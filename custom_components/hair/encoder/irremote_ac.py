@@ -245,7 +245,7 @@ def encode(
     ac.next.model = device.ir_model or 1  # 1 = generic/default model
 
     if power:
-        ac.next.power = 1
+        ac.next.power = True
         ac.next.mode = _MODE_MAP.get(hvac_mode, _MODE_MAP["auto"])
         if temperature is not None:
             ac.next.degrees = round(temperature)
@@ -261,7 +261,7 @@ def encode(
                 ac.next.swingv = getattr(irhvac, "swingv_t_kAuto", 0)
                 ac.next.swingh = getattr(irhvac, "swingh_t_kAuto", 0)
     else:
-        ac.next.power = 0
+        ac.next.power = False
 
     ac.sendAc()
 
