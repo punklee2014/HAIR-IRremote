@@ -18,6 +18,7 @@ def _is_musl() -> bool:
 
     Result is cached at module level — the filesystem doesn't change at runtime.
     """
+    global _is_musl_cached
     if _is_musl_cached is not None:
         return _is_musl_cached
     if sys.platform != "linux":
