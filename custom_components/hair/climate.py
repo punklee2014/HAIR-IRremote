@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from functools import partial
 from typing import Any
 
 from homeassistant.components.climate import (
@@ -272,13 +273,19 @@ class HAIRClimateEntity(ClimateEntity):
             power, mode, temp, fan_mode, swing_mode, self._device.name,
         )
         try:
-            timings = ac_encode(
+            # Run the native encoder in a thread to isolate any
+            # C++ crashes from the HA event loop.
+            _send_protocol_inner = partial(
+                ac_encode,
                 self._device,
                 power=power,
                 hvac_mode=mode,
                 temperature=temp,
                 fan_mode=fan_mode or self._fan_mode,
                 swing_mode=swing_mode or self._swing_mode,
+            )
+            timings = await self._manager._hass.async_add_executor_job(
+                _send_protocol_inner
             )
         except ImportError as err:
             _LOGGER.error(
@@ -287,6 +294,14 @@ class HAIRClimateEntity(ClimateEntity):
                 err,
             )
             raise RuntimeError(str(err)) from err
+        except Exception as err:
+            _LOGGER.exception(
+                "Protocol AC encoder crashed on %s (power=%s mode=%s temp=%s)",
+                self._device.name, power, mode, temp,
+            )
+            raise RuntimeError(
+                f"Protocol encoder failed: {err}"
+            ) from err
         await self._manager.async_send_raw_timings(
             self._device.id, timings
         )
