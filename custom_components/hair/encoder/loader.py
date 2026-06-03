@@ -45,22 +45,6 @@ def _native_candidates(arch_dir: str) -> list[Path]:
 
 def _load_so_module(so_file: Path) -> ModuleType:
     """Load a single ``_irhvac.so`` extension file as module ``irhvac``."""
-    # First, verify the SO file exports PyInit_irhvac.
-    try:
-        handle = ctypes.CDLL(str(so_file))
-    except OSError as exc:
-        raise ImportError(
-            f"Cannot open {so_file}: {exc}"
-        ) from exc
-    # Try to find PyInit_irhvac via ctypes
-    try:
-        _ = handle.PyInit_irhvac
-    except AttributeError:
-        # PyInit_irhvac not found — this SO is not a Python extension.
-        # Try the standard extension loading path, which will give a clearer error.
-        pass
-
-    # Now load via Python's standard extension machinery.
     loader = ExtensionFileLoader("irhvac", str(so_file))
     spec = importlib.util.spec_from_loader("irhvac", loader)
     if spec is None or spec.loader is None:
