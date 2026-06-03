@@ -44,16 +44,28 @@ def _native_candidates(arch_dir: str) -> list[Path]:
 
 
 def _load_so_module(so_file: Path) -> ModuleType:
-    """Load a single ``_irhvac.so`` extension file as module ``irhvac``."""
-    loader = ExtensionFileLoader("irhvac", str(so_file))
-    spec = importlib.util.spec_from_loader("irhvac", loader)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot create module spec for {so_file}")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["irhvac"] = module
-    spec.loader.exec_module(module)
-    return module
+    """Load ``_irhvac.so`` as module ``irhvac``, falling back to ``pyhvac.irhvac``."""
+    for module_name in ("irhvac", "pyhvac.irhvac"):
+        loader = ExtensionFileLoader(module_name, str(so_file))
+        spec = importlib.util.spec_from_loader(module_name, loader)
+        if spec is None or spec.loader is None:
+            _LOGGER.debug("Cannot create spec for %s as %s", so_file, module_name)
+            continue
+        try:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["irhvac"] = module
+            spec.loader.exec_module(module)
+            if module_name != "irhvac":
+                _LOGGER.warning(
+                    "irhvac loaded as %s (old SWIG package=pyhvac build). "
+                    "Recompile with patched libirhvac.i for correct exports.",
+                    module_name,
+                )
+            return module
+        except ImportError:
+            sys.modules.pop("irhvac", None)
+            _LOGGER.debug("Tried %s for %s, failed", module_name, so_file)
+    raise ImportError(f"Cannot load {so_file} as any known module name")
 
 
 def _get_arch_dir() -> str:

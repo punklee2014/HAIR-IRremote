@@ -22,19 +22,19 @@ if [[ $# -eq 1 ]]; then
     fi
 fi
 
-# Patch the SWIG interface file: remove package=pyhvac so the .so exports PyInit_irhvac.
-# Using python3 for reliability — busybox sed on Alpine handles regex differently.
+# Replace the SWIG interface file with our patched version.
+# The upstream uses %module (package="pyhvac") irhvac, which causes SWIG
+# to generate PyInit_pyhvac_irhvac instead of PyInit_irhvac.  Python's
+# extension loader will reject the .so if the init function name does not
+# match the bare module name we request ("irhvac").
+PATCHED_IF="$REPO_ROOT/build/patches/libirhvac.i"
 SWIG_IF="$PYTHON_DIR/libirhvac.i"
-if grep -qF '(package="pyhvac")' "$SWIG_IF" 2>/dev/null; then
-    echo "Patching $SWIG_IF: removing package=pyhvac"
-    python3 -c "
-import sys
-data = open('$SWIG_IF').read()
-data = data.replace('%module (package=\"pyhvac\") irhvac', '%module irhvac')
-open('$SWIG_IF', 'w').write(data)
-print('Patched OK')
-"
-    grep '^%module' "$SWIG_IF"  # verify
+if [ -f "$PATCHED_IF" ]; then
+    cp "$PATCHED_IF" "$SWIG_IF"
+    echo "=== Patched SWIG .i (will produce PyInit_irhvac) ==="
+    grep '^%module' "$SWIG_IF"
+else
+    echo "WARNING: $PATCHED_IF not found; SWIG module name may be wrong"
 fi
 
 cd "$PYTHON_DIR"
@@ -47,6 +47,15 @@ make distclean 2>/dev/null || true
 # command. We skip the `swig` target because it contains a Docker-detection
 # block that looks for ./swig-4.2.0/swig which does not exist in our image.
 make _irhvac.so
+
+# Verify the .so exports PyInit_irhvac (not PyInit_pyhvac_irhvac).
+if ! python3 -c "import ctypes; ctypes.CDLL('./_irhvac.so').PyInit_irhvac" 2>/dev/null; then
+    echo "=== ERROR: _irhvac.so does NOT export PyInit_irhvac ==="
+    echo "Exported symbols containing 'PyInit':"
+    nm -D _irhvac.so 2>/dev/null | grep PyInit || objdump -T _irhvac.so 2>/dev/null | grep PyInit || true
+    exit 1
+fi
+echo "=== Verified: _irhvac.so exports PyInit_irhvac ==="
 
 # Copy output.
 mkdir -p "$REPO_ROOT/$OUTPUT_DIR"
