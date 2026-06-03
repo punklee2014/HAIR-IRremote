@@ -1,6 +1,7 @@
 """Load the irhvac native module for the current platform."""
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import logging
 import platform
@@ -88,6 +89,11 @@ def load_irhvac() -> ModuleType:
     errors: list[str] = []
     tried: list[str] = []
 
+    _LOGGER.debug(
+        "Loading irhvac: arch_dir=%s, candidates=%s, musl=%s",
+        arch_dir, candidates, _is_musl(),
+    )
+
     for native_path in candidates:
         so_file = native_path / "_irhvac.so"
         tried.append(str(so_file))
@@ -96,7 +102,7 @@ def load_irhvac() -> ModuleType:
             continue
         try:
             module = _load_so_module(so_file)
-        except ImportError as exc:
+        except Exception as exc:
             errors.append(f"{so_file}: {exc}")
             continue
         _LOGGER.info("Loaded irhvac from %s", so_file)
