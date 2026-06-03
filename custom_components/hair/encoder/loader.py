@@ -99,23 +99,32 @@ def load_irhvac() -> ModuleType:
         except ImportError as exc:
             errors.append(f"{so_file}: {exc}")
             continue
-        _LOGGER.info("Loaded irhvac from %s (musl=%s)", so_file, _is_musl())
+        _LOGGER.info("Loaded irhvac from %s", so_file)
         return module
 
-    libc_hint = (
-        "Install the musl build at "
-        f"custom_components/hair/native/{arch_dir}_musl/_irhvac.so "
-        "(see build/docker/Dockerfile.irhvac.musl), or switch the device to "
-        "Learned mode."
-        if _is_musl()
-        else "Install the glibc build at "
-        f"custom_components/hair/native/{arch_dir}/_irhvac.so, or switch "
-        "to Learned mode."
-    )
+    # Build a user-friendly hint.
+    parts: list[str] = []
+    if _is_musl():
+        parts.append(
+            "Your HA host uses musl libc. "
+            "We need a musl build. "
+            "Install the musl build at "
+            f"custom_components/hair/native/{arch_dir}_musl/_irhvac.so "
+            "(see build/docker/Dockerfile.irhvac.musl), "
+            "or switch the device to Learned mode."
+        )
+    else:
+        parts.append(
+            "Your HA host uses glibc. "
+            "Download the release zip and copy "
+            f"custom_components/hair/native/{arch_dir}/_irhvac.so to your HA instance, "
+            "or switch the device to Learned mode."
+        )
     raise ImportError(
         "Failed to load protocol encoder native library. Tried: "
         + "; ".join(tried)
         + ". Details: "
         + " | ".join(errors)
-        + f". {libc_hint}"
+        + ". "
+        + " ".join(parts)
     )

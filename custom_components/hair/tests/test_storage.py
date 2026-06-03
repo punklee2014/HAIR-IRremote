@@ -79,8 +79,8 @@ async def test_store_skips_malformed_entries(fake_hass):
     backing = _FakeStore()
     backing._data = {
         "devices": [
-            {"id": "good", "name": "Good", "device_type": "tv"},
-            {"id": "bad", "device_type": "not-a-type"},  # Triggers ValueError
+            {"id": "good", "name": "Good", "device_type": "media_player"},
+            {"id": "bad", "commands": "NOT_A_LIST"},  # commands must be a list
         ]
     }
     with patch("custom_components.hair.storage.Store", lambda *a, **k: backing):

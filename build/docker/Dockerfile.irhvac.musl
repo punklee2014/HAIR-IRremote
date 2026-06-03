@@ -4,16 +4,28 @@
 #   docker run --rm -v $(pwd):/workspace irhvac-builder:musl \
 #     bash ./build/build_irhvac.sh aarch64 custom_components/hair/native/linux_aarch64_musl
 #
-FROM alpine:3.20
+FROM alpine:3.21
+
+ARG SWIG_VERSION=4.2.1
 
 RUN apk add --no-cache \
     bash \
     g++ \
     make \
     python3-dev \
-    swig \
     curl \
+    tar \
     ca-certificates \
-    pcre2-dev
+    pcre2-dev \
+    musl-dev \
+    linux-headers \
+    && curl -sL "https://sourceforge.net/projects/swig/files/swig/swig-${SWIG_VERSION}/swig-${SWIG_VERSION}.tar.gz/download" \
+        -o /tmp/swig.tar.gz \
+    && tar xzf /tmp/swig.tar.gz -C /tmp \
+    && cd "/tmp/swig-${SWIG_VERSION}" \
+    && ./configure --prefix=/usr/local \
+    && make -j"$(nproc)" \
+    && make install \
+    && rm -rf /tmp/swig.tar.gz "/tmp/swig-${SWIG_VERSION}"
 
 WORKDIR /workspace

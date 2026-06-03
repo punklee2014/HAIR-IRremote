@@ -13,6 +13,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON_DIR="$REPO_ROOT/vendor/IRremoteESP8266/python"
 
+# Detect musl vs glibc and suffix the output dir accordingly.
+if ldd /bin/ls 2>/dev/null | grep -q musl; then
+    OUTPUT_DIR="${OUTPUT_DIR}_musl"
+    echo "Detected musl libc → output: $OUTPUT_DIR"
+fi
+
 cd "$PYTHON_DIR"
 
 # Clean previous build artifacts.
@@ -28,4 +34,4 @@ make _irhvac.so
 mkdir -p "$REPO_ROOT/$OUTPUT_DIR"
 cp _irhvac.so irhvac.py "$REPO_ROOT/$OUTPUT_DIR/"
 
-echo "Built _irhvac.so for linux_${ARCH} → $OUTPUT_DIR"
+echo "Built _irhvac.so → $OUTPUT_DIR"
