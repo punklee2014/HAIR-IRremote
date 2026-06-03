@@ -13,10 +13,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON_DIR="$REPO_ROOT/vendor/IRremoteESP8266/python"
 
-# Detect musl vs glibc and suffix the output dir accordingly.
-if ldd /bin/ls 2>/dev/null | grep -q musl; then
-    OUTPUT_DIR="${OUTPUT_DIR}_musl"
-    echo "Detected musl libc → output: $OUTPUT_DIR"
+# Only auto-detect musl suffix when the caller did NOT pass an explicit output_dir.
+# CI workflows pass ${{ matrix.out_dir }} explicitly, so we don't tweak it.
+if [[ $# -eq 1 ]]; then
+    if ldd /bin/ls 2>/dev/null | grep -q musl; then
+        OUTPUT_DIR="${OUTPUT_DIR}_musl"
+        echo "Detected musl libc → output: $OUTPUT_DIR"
+    fi
 fi
 
 cd "$PYTHON_DIR"
