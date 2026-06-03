@@ -57,12 +57,8 @@ def _load_so_module(so_file: Path) -> ModuleType:
         _ = handle.PyInit_irhvac
     except AttributeError:
         # PyInit_irhvac not found — this SO is not a Python extension.
-        # Use the standard loading path instead, which will give a clear error.
-        raise ImportError(
-            f"dynamic module '{so_file}' does not define module export function "
-            f"(PyInit_irhvac). This .so is likely the wrong "
-            f"architecture, or was not compiled with SWIG."
-        ) from None
+        # Try the standard extension loading path, which will give a clearer error.
+        pass
 
     # Now load via Python's standard extension machinery.
     loader = ExtensionFileLoader("irhvac", str(so_file))
