@@ -22,6 +22,13 @@ if [[ $# -eq 1 ]]; then
     fi
 fi
 
+# Patch the SWIG interface file: remove package=pyhvac so the .so exports PyInit_irhvac.
+SWIG_IF="$PYTHON_DIR/libirhvac.i"
+if grep -q 'package=.pyhvac.' "$SWIG_IF" 2>/dev/null; then
+    echo "Patching $SWIG_IF: removing package=pyhvac"
+    sed -i 's/%module (package=.pyhvac.) irhvac/%module irhvac/' "$SWIG_IF"
+fi
+
 cd "$PYTHON_DIR"
 
 # Clean previous build artifacts.
