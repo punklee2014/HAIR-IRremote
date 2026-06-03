@@ -14,21 +14,32 @@ _NATIVE_DIR = Path(__file__).parent.parent / "native"
 
 
 def _is_musl() -> bool:
-    """Return True when the HA host likely uses musl (not glibc)."""
+    """Return True when the HA host likely uses musl (not glibc).
+
+    Result is cached at module level — the filesystem doesn't change at runtime.
+    """
+    if _is_musl_cached is not None:
+        return _is_musl_cached
     if sys.platform != "linux":
+        _is_musl_cached = False
         return False
     for glibc_ld in (
         Path("/lib/ld-linux-aarch64.so.1"),
         Path("/lib64/ld-linux-x86-64.so.2"),
     ):
         if glibc_ld.is_file():
+            _is_musl_cached = False
             return False
     lib = Path("/lib")
     if lib.is_dir():
         for musl_ld in lib.glob("ld-musl-*.so.1"):
             if musl_ld.is_file():
+                _is_musl_cached = True
                 return True
+    _is_musl_cached = True
     return True
+
+_is_musl_cached: bool | None = None
 
 
 def _native_candidates(arch_dir: str) -> list[Path]:

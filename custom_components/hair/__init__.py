@@ -72,9 +72,14 @@ async def async_setup_entry(
     trigger_manager = TriggerManager(hass, store)
     signal_monitor = SignalMonitor(hass, signal_store, store, trigger_manager)
 
+    # Probe the native encoder in a thread — loading .so files and
+    # scanning /lib for musl are blocking I/O that HA's event loop
+    # watchdog rightfully complains about.
     from .encoder.irremote_ac import probe_protocol_encoder
 
-    protocol_ok, protocol_err = probe_protocol_encoder()
+    protocol_ok, protocol_err = await hass.async_add_executor_job(
+        probe_protocol_encoder
+    )
     if not protocol_ok:
         _LOGGER.warning(
             "Protocol AC encoder unavailable on this host: %s. "
