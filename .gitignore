@@ -9,6 +9,8 @@ build/
 !build/build_irhvac.sh
 !build/docker/
 !build/docker/Dockerfile.irhvac
+!build/patches/
+!build/patches/libirhvac.i
 # Allow the frontend bundle (HA loads it directly)
 !custom_components/hair/frontend/dist/
 *.egg

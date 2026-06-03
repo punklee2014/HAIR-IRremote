@@ -48,14 +48,18 @@ make distclean 2>/dev/null || true
 # block that looks for ./swig-4.2.0/swig which does not exist in our image.
 make _irhvac.so
 
-# Verify the .so exports PyInit_irhvac (not PyInit_pyhvac_irhvac).
-if ! python3 -c "import ctypes; ctypes.CDLL('./_irhvac.so').PyInit_irhvac" 2>/dev/null; then
-    echo "=== ERROR: _irhvac.so does NOT export PyInit_irhvac ==="
-    echo "Exported symbols containing 'PyInit':"
-    nm -D _irhvac.so 2>/dev/null | grep PyInit || objdump -T _irhvac.so 2>/dev/null | grep PyInit || true
+# Verify the .so exports a usable PyInit symbol.
+# SWIG may produce PyInit_irhvac OR PyInit__irhvac (latter = upstream package=pyhvac).
+# The loader handles both, so accept either.
+EXPORTS=$(nm -D _irhvac.so 2>/dev/null | grep ' PyInit' || objdump -T _irhvac.so 2>/dev/null | grep ' PyInit' || true)
+if echo "$EXPORTS" | grep -qE 'PyInit_(_?irhvac)'; then
+    echo "=== Verified: _irhvac.so exports a usable PyInit ==="
+    echo "$EXPORTS"
+else
+    echo "=== ERROR: _irhvac.so does NOT export PyInit_irhvac or PyInit__irhvac ==="
+    echo "$EXPORTS"
     exit 1
 fi
-echo "=== Verified: _irhvac.so exports PyInit_irhvac ==="
 
 # Copy output.
 mkdir -p "$REPO_ROOT/$OUTPUT_DIR"
