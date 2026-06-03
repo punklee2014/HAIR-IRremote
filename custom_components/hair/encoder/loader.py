@@ -44,8 +44,8 @@ def _native_candidates(arch_dir: str) -> list[Path]:
 
 
 def _load_so_module(so_file: Path) -> ModuleType:
-    """Load ``_irhvac.so`` as module ``irhvac``, falling back to ``pyhvac.irhvac``."""
-    for module_name in ("irhvac", "pyhvac.irhvac"):
+    """Load ``_irhvac.so`` as module ``irhvac``, trying known mangled names."""
+    for module_name in ("irhvac", "_irhvac", "pyhvac.irhvac"):
         loader = ExtensionFileLoader(module_name, str(so_file))
         spec = importlib.util.spec_from_loader(module_name, loader)
         if spec is None or spec.loader is None:
