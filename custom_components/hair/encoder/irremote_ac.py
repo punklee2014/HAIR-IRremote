@@ -168,6 +168,7 @@ def _get_irhvac() -> ModuleType:
             ) from exc
         _build_maps(_irhvac)
     return _irhvac
+    return _irhvac
 
 
 def _build_maps(irhvac: ModuleType) -> None:
