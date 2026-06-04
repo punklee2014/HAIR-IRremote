@@ -35,6 +35,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set py suffix
+        id: py_suffix
+        run: echo "value=py$(echo '${{ matrix.python }}' | tr -d '.')" >> $GITHUB_OUTPUT
+
       - name: Build irhvac builder image (${{ matrix.platform }}, py${{ matrix.python }})
         run: |
           docker buildx build \
@@ -59,8 +63,8 @@ jobs:
         with:
           name: native-${{ matrix.arch }}-py${{ matrix.python }}
           path: |
-            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/_irhvac.so
-            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/irhvac.py
+            custom_components/hair/native/${{ matrix.arch }}/${{ steps.py_suffix.outputs.value }}/_irhvac.so
+            custom_components/hair/native/${{ matrix.arch }}/${{ steps.py_suffix.outputs.value }}/irhvac.py
 
   build-native-musl:
     name: Build native musl (${{ matrix.arch }} ${{ matrix.alpine }})
@@ -115,6 +119,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set py suffix
+        id: py_suffix
+        run: echo "value=py$(echo '${{ matrix.python }}' | tr -d '.')" >> $GITHUB_OUTPUT
+
       - name: Build irhvac musl builder image (${{ matrix.platform }}, ${{ matrix.alpine }})
         run: |
           docker buildx build \
@@ -139,8 +147,8 @@ jobs:
         with:
           name: native-${{ matrix.arch }}-py${{ matrix.python }}
           path: |
-            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/_irhvac.so
-            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/irhvac.py
+            custom_components/hair/native/${{ matrix.arch }}/${{ steps.py_suffix.outputs.value }}/_irhvac.so
+            custom_components/hair/native/${{ matrix.arch }}/${{ steps.py_suffix.outputs.value }}/irhvac.py
 
   release:
     name: Create Release
