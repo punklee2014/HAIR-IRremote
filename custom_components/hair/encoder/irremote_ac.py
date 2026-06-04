@@ -1,21 +1,25 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-All native code runs in a standalone HTTP server process that HA
-communicates with over localhost.  Zero fork, zero in-process C loading.
+Loads ``irhvac`` in-process — same as the proven manual test.  No
+subprocess, no HTTP server, no fork.
 """
 from __future__ import annotations
 
-import json
 import logging
 import platform
-import socket
-import urllib.request
+import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from ..models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
+
+_irhvac: ModuleType | None = None
+_PROTOCOL_MAP: dict[str, int] = {}
+_MODE_MAP: dict[str, int] = {}
+_FAN_MAP: dict[str, int] = {}
 
 
 class IRHVACUnavailableError(ImportError):
@@ -43,11 +47,9 @@ PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
     "WHIRLPOOL_AC": [{"value": 1, "label": "DG11J13A (Default)"}, {"value": 2, "label": "DG11J191"}],
 }
 
-_ENCODE_SERVER_PORT = 9876
-
 
 def _find_native_dir() -> str | None:
-    nd_root = Path(__file__).parent.parent / "native"
+    _NATIVE_DIR = Path(__file__).parent.parent / "native"
     machine = platform.machine()
     if machine in ("aarch64", "arm64", "armv8l", "armv8b"):
         arch = "linux_aarch64"
@@ -56,24 +58,53 @@ def _find_native_dir() -> str | None:
     else:
         arch = "linux_x86_64"
     for suffix in ("_musl", ""):
-        d = nd_root / f"{arch}{suffix}"
+        d = _NATIVE_DIR / f"{arch}{suffix}"
         if (d / "irhvac.py").is_file() and (d / "_irhvac.so").is_file():
             return str(d)
     return None
 
 
-def probe_protocol_encoder() -> tuple[bool, str | None]:
+def _import_irhvac() -> ModuleType:
+    """Import irhvac — matching the proven manual test exactly."""
+    global _irhvac
+    if _irhvac is not None:
+        return _irhvac
+
     nd = _find_native_dir()
     if nd is None:
-        return False, "No native irhvac directory for this platform"
-    # Light probe — just test TCP connection, no HTTP body.
+        raise IRHVACUnavailableError("No native irhvac directory")
+    if nd not in sys.path:
+        sys.path.insert(0, nd)
+
+    import irhvac
+
+    _irhvac = irhvac
+    _LOGGER.info("Loaded irhvac from %s", nd)
+
+    # Build maps using getattr (not raw ints — SWIG musl wants enum objects).
+    _PROTOCOL_MAP.clear()
+    for a in dir(irhvac):
+        if a.isupper() and not a.startswith("_") and isinstance(getattr(irhvac, a), int):
+            _PROTOCOL_MAP[a.upper()] = getattr(irhvac, a)
+
+    _MODE_MAP.clear()
+    for name in ("auto", "cool", "heat", "dry", "fan_only"):
+        _MODE_MAP[name] = getattr(irhvac, f"opmode_t_k{name.capitalize()}", 0)
+    _MODE_MAP["off"] = getattr(irhvac, "opmode_t_kOff", -1)
+
+    _FAN_MAP.clear()
+    for name in ("auto", "low", "medium", "high"):
+        _FAN_MAP[name] = getattr(irhvac, f"fanspeed_t_k{name.capitalize()}", 0)
+
+    return irhvac
+
+
+def probe_protocol_encoder() -> tuple[bool, str | None]:
     try:
-        import socket
-        s = socket.create_connection(("127.0.0.1", _ENCODE_SERVER_PORT), timeout=1)
-        s.close()
+        _import_irhvac()
         return True, None
     except Exception as exc:
-        return False, f"Encode server not reachable on port {_ENCODE_SERVER_PORT}: {exc}"
+        return False, str(exc)
 
 
 def is_protocol_encoder_available() -> bool:
@@ -88,18 +119,11 @@ def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str,
 
 
 def get_supported_protocols() -> list[str]:
-    return sorted(PROTOCOL_MODELS.keys())
-
-
-def _rpc(params: dict[str, Any]) -> list[int]:
-    """POST to the encode server, return raw (all-positive) timings."""
-    url = f"http://127.0.0.1:{_ENCODE_SERVER_PORT}/encode"
-    data = json.dumps(params).encode()
     try:
-        with urllib.request.urlopen(url, data=data, timeout=10) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as exc:
-        raise RuntimeError(f"Encode server error: {exc}") from exc
+        _import_irhvac()
+        return sorted(_PROTOCOL_MAP.keys())
+    except IRHVACUnavailableError:
+        return sorted(PROTOCOL_MODELS.keys())
 
 
 def encode(
@@ -112,29 +136,53 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    params: dict[str, Any] = {
-        "protocol": (device.ir_protocol or "COOLIX").upper(),
-        "model": device.ir_model or 1,
-        "power": power,
-    }
+    """Encode an AC state.  Uses getattr for ALL enum values — matching
+    the proven manual test approach that avoids SWIG bool/int mismatches."""
+    mod = _import_irhvac()
+
+    protocol_name = (device.ir_protocol or "").upper()
+    if protocol_name not in _PROTOCOL_MAP:
+        raise ValueError(f"Unknown IR protocol '{device.ir_protocol}'")
+
+    ac = mod.IRac(0)
+    ac.next.protocol = _PROTOCOL_MAP[protocol_name]
+    ac.next.model = device.ir_model or 1
+
     if power:
-        params["mode"] = hvac_mode
-        params["degrees"] = round(temperature) if temperature is not None else 24
-        if fan_mode:
-            params["fanspeed"] = fan_mode
+        ac.next.power = True
+        ac.next.mode = _MODE_MAP.get(hvac_mode, _MODE_MAP["auto"])
+        if temperature is not None:
+            ac.next.degrees = round(temperature)
+        if fan_mode and fan_mode in _FAN_MAP:
+            ac.next.fanspeed = _FAN_MAP[fan_mode]
         if swing_mode and swing_mode != "off":
             if swing_mode in ("vertical", "on", "both"):
-                params["swingv"] = 0
+                ac.next.swingv = getattr(mod, "swingv_t_kAuto", 0)
             if swing_mode in ("horizontal", "both"):
-                params["swingh"] = 0
+                ac.next.swingh = getattr(mod, "swingh_t_kAuto", 0)
+    else:
+        ac.next.power = False
 
-    _LOGGER.debug("RPC encode: %s", params)
-    raw = _rpc(params)
+    ac.sendAc()
+    raw = ac.getTiming()
+    if raw is None:
+        raise RuntimeError("IRac.getTiming() returned None")
 
-    # Convert all-positive to signed.
+    # Truncate repeats — only one frame.
+    hdr = 0
+    for i in range(0, len(raw), 2):
+        if raw[i] > 2000:
+            hdr += 1
+            if hdr >= 2:
+                raw = raw[:i]
+                break
+    while raw and raw[-1] > 50000:
+        raw.pop()
+
     signed: list[int] = []
     for i, val in enumerate(raw):
         signed.append(int(val) if i % 2 == 0 else -int(val))
 
-    _LOGGER.debug("Encoded %s: %d timings", params.get("protocol"), len(signed))
+    ac.resetTiming()
+    _LOGGER.debug("Encoded %s: %d timings", protocol_name, len(signed))
     return signed

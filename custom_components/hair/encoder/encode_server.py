@@ -27,12 +27,22 @@ def build_maps(mod):
         if a.isupper() and not a.startswith("_") and isinstance(getattr(mod, a), int):
             proto[a.upper()] = getattr(mod, a)
     mode = {
-        "off": -1, "auto": 0, "cool": 1, "heat": 2, "dry": 3, "fan_only": 4,
+        "off": getattr(mod, "opmode_t_kOff", -1),
+        "auto": getattr(mod, "opmode_t_kAuto", 0),
+        "cool": getattr(mod, "opmode_t_kCool", 1),
+        "heat": getattr(mod, "opmode_t_kHeat", 2),
+        "dry": getattr(mod, "opmode_t_kDry", 3),
+        "fan_only": getattr(mod, "opmode_t_kFan", 4),
     }
     fan = {
-        "auto": 0, "low": 2, "medium": 3, "high": 4,
+        "auto": getattr(mod, "fanspeed_t_kAuto", 0),
+        "low": getattr(mod, "fanspeed_t_kLow", 2),
+        "medium": getattr(mod, "fanspeed_t_kMedium", 3),
+        "high": getattr(mod, "fanspeed_t_kHigh", 4),
     }
-    return proto, mode, fan
+    swingv = getattr(mod, "swingv_t_kAuto", 0)
+    swingh = getattr(mod, "swingh_t_kAuto", 0)
+    return proto, mode, fan, swingv, swingh
 
 
 def find_native_dir():
@@ -51,7 +61,7 @@ def serve_forever(native_dir: str, port: int = _ENCODE_SERVER_PORT):
     sys.path.insert(0, native_dir)
     import irhvac
 
-    PROTO, MODE, FAN = build_maps(irhvac)
+    PROTO, MODE, FAN, SWINGV, SWINGH = build_maps(irhvac)
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -78,11 +88,11 @@ def serve_forever(native_dir: str, port: int = _ENCODE_SERVER_PORT):
                 ac.next.model = params.get("model", 1)
                 ac.next.power = bool(params.get("power", True))
                 if ac.next.power:
-                    ac.next.mode = MODE.get(params.get("mode", "auto"), 0)
+                    ac.next.mode = MODE.get(params.get("mode", "auto"), MODE["auto"])
                     ac.next.degrees = params.get("degrees", 24)
                     fs = params.get("fanspeed")
                     if fs:
-                        ac.next.fanspeed = FAN.get(fs, 0)
+                        ac.next.fanspeed = FAN.get(fs, FAN["auto"])
                     if "swingv" in params:
                         ac.next.swingv = params["swingv"]
                     if "swingh" in params:
