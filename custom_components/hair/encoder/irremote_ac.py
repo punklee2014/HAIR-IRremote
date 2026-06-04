@@ -226,21 +226,15 @@ def encode(
         for k, v in os.environ.items():
             if k not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH"):
                 clean_env[k] = v
-        # Use bare "python3" command so the OS PATH resolves to the
-        # system interpreter — this matches the verified working test.
-        py_exe = "python3"
+
+        # Preferred: system python3 (verified working in manual test).
+        # Fallback: shutil.which, then sys.executable.
+        for py_exe in ("/usr/bin/python3", "python3", sys.executable):
+            if py_exe == sys.executable or os.path.isfile(py_exe) or shutil.which(py_exe):
+                break
 
         proc = subprocess.run(
             [py_exe, script_path, *cmd[2:]],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env=clean_env,
-        )
-    except FileNotFoundError:
-        # Fallback if PATH doesn't have python3.
-        proc = subprocess.run(
-            [sys.executable, script_path, *cmd[2:]],
             capture_output=True,
             text=True,
             timeout=15,
