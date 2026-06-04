@@ -75,21 +75,13 @@ def _get_system_python() -> str:
 
 
 async def _call_worker(nd: str, args: list[str]) -> list[int]:
-    """通过真正的非 Shell 干净列表拉起子进程，绝不产生错位"""
-    
-    # 彻底洗净父进程继承下来的复杂共享库路径与信号劫持
-    clean_env = {
-        "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "HOME": "/tmp",
-        "PYTHONPATH": nd,
-        "LD_LIBRARY_PATH": nd,
-    }
+    """通过数组形式直接拉起子进程，继承父进程环境以避免库路径丢失。"""
 
     # 形成最纯粹的数组级传递：sys.argv[1] = nd, sys.argv[2] = proto ...
     cmd = [_get_system_python(), _worker_path(), nd] + args
 
     def _run():
-        return subprocess.run(cmd, capture_output=True, text=True, env=clean_env, timeout=5)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=5)
 
     loop = asyncio.get_running_loop()
     try:
