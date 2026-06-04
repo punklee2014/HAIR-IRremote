@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -218,11 +220,22 @@ def encode(
     _LOGGER.info("Subprocess AC encode: %s", " ".join(cmd[2:]))
 
     try:
+        # Clear dangerous env vars that may be inherited from HA and
+        # cause the musl .so to load wrong libraries (SIGSEGV).
+        clean_env: dict[str, str] = {}
+        for k, v in os.environ.items():
+            if k not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH"):
+                clean_env[k] = v
+        # Use "python3" (system) instead of sys.executable (HA venv may
+        # differ from the ABI the .so was compiled against).
+        py_exe = shutil.which("python3") or sys.executable
+
         proc = subprocess.run(
-            cmd,
+            [py_exe, script_path, *cmd[2:]],
             capture_output=True,
             text=True,
             timeout=15,
+            env=clean_env,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("AC encoder subprocess timed out (15 s)")
