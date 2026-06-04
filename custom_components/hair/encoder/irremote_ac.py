@@ -1,8 +1,8 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-Each button press calls ``subprocess_encode.py`` with clean POSITIONAL
-string args — matching the proven command-line test exactly.
-No JSON, no getattr issues, no SWIG type conflicts.
+Each button press calls ``subprocess_encode.py`` with pure positional
+string argv — no JSON, no stdin pipe, no temp files.  Exactly matches
+the proven command-line test.
 """
 from __future__ import annotations
 
@@ -77,48 +77,24 @@ def _get_system_python() -> str:
     raise IRHVACUnavailableError("Cannot find system python3")
 
 
-async def _call_worker(params: dict[str, Any]) -> list[int]:
-    """Run ``subprocess_encode.py <native_dir> --stdin < json``.
+async def _call_worker(nd: str, args: list[str]) -> list[int]:
+    """Run ``subprocess_encode.py`` with pure positional string args.
 
-    Command line is fixed (2 positional args).  All variable protocol
-    parameters go through stdin as JSON — unlimited extensibility.
+    Command: python3 subprocess_encode.py <nd> <proto> <model> <mode> <degrees> [flags]
     """
-    nd = _find_native_dir()
-    clean_env = {
-        "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "HOME": os.environ.get("HOME", "/tmp"),
-    }
+    cmd = [_get_system_python(), _worker_path(), nd] + args
 
-    # Write params to a temp file — avoids stdin pipe which behaves
-    # differently in Python 3.14's subprocess.  Worker reads from file.
-    import tempfile
-    fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="hair_params_")
-    with os.fdopen(fd, "w") as fh:
-        json.dump(params, fh)
+    def _run():
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=5)
 
-    cmd = [_get_system_python(), _worker_path(), nd, tmp_path]
-
-    def _run_system_cmd():
-        return subprocess.run(cmd, capture_output=True,
-                              text=True, env=clean_env, timeout=5)
-
+    loop = asyncio.get_running_loop()
     try:
-        loop = asyncio.get_running_loop()
-        res = await loop.run_in_executor(None, _run_system_cmd)
+        res = await loop.run_in_executor(None, _run)
     except subprocess.TimeoutExpired:
         raise RuntimeError("Encoder subprocess timed out")
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "").strip()[:500]
-        _LOGGER.error("Encoder exit=%s stderr=%s stdout=%s",
-                       res.returncode,
-                       (res.stderr or "").strip()[:300],
-                       (res.stdout or "").strip()[:200])
         raise RuntimeError(
             f"Encoder subprocess exited {res.returncode}: {err or 'no output'}"
         )
@@ -161,25 +137,22 @@ async def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    # Build JSON params dict — any new protocol features just add keys.
-    # The worker reads whatever keys are present, ignores unknown ones.
-    params: dict[str, Any] = {
-        "protocol": (device.ir_protocol or "COOLIX").upper(),
-        "model": int(device.ir_model or 1),
-        "power": bool(power),
-    }
-    if power:
-        params["mode"] = hvac_mode
-        params["degrees"] = round(temperature) if temperature is not None else 24
-        if fan_mode:
-            params["fanspeed"] = str(fan_mode).lower()
-        if swing_mode and swing_mode != "off":
-            if swing_mode in ("vertical", "on", "both"):
-                params["swingv"] = str(swing_mode)
-            if swing_mode in ("horizontal", "both"):
-                params["swingh"] = str(swing_mode)
+    nd = _find_native_dir()
+    proto = (device.ir_protocol or "COOLIX").upper()
+    model = str(device.ir_model or 1)
+    mode = str(hvac_mode).lower()
+    temp = str(round(temperature) if temperature is not None else 24)
 
-    raw = await _call_worker(params)
+    # Pure positional argv — no JSON, no files, no pipes.
+    args = [proto, model, mode, temp]
+    if not power:
+        args.append("--off")
+    if fan_mode:
+        args.extend(["--fan", str(fan_mode).lower()])
+    if swing_mode and swing_mode != "off":
+        args.extend(["--swing", str(swing_mode).lower()])
+
+    raw = await _call_worker(nd, args)
 
     signed: list[int] = []
     for i, val in enumerate(raw):

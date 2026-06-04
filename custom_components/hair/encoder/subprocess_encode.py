@@ -1,10 +1,11 @@
 """Child-process entry point for protocol-based AC encoding.
 
-Always called from ``irremote_ac.py`` with TWO positional args,
-then reads JSON params from STDIN.  This keeps the command-line
-invocation simple while allowing unlimited protocol parameters.
+Called from ``irremote_ac.py`` with pure positional string argv::
 
-    python3 subprocess_encode.py <native_dir> --stdin  < params.json
+    python3 subprocess_encode.py <nd> <proto> <model> <mode> <degrees> [--fan F] [--swing S] [--off]
+
+No JSON, no stdin, no files — just raw argv, matching the proven
+command-line test.
 """
 from __future__ import annotations
 
@@ -26,37 +27,54 @@ def _build_map(mod, prefix: str, strip_leading_k: bool = False) -> dict[str, int
 
 
 def main() -> None:
-    if len(sys.argv) < 3:
-        print("Usage: subprocess_encode.py <native_dir> <params.json>",
-              file=sys.stderr)
+    if len(sys.argv) < 6:
+        print(
+            "Usage: subprocess_encode.py <nd> <proto> <model> <mode> <degrees> [...]",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     native_dir = Path(sys.argv[1])
-    params_file = sys.argv[2]
+    protocol_name = sys.argv[2].upper()
+    model = int(sys.argv[3])
+    mode_str = sys.argv[4].lower()
+    degrees = int(round(float(sys.argv[5])))
 
-    try:
-        params = json.loads(open(params_file).read())
-    except json.JSONDecodeError as exc:
-        print(f"ERROR: bad JSON from stdin: {exc}", file=sys.stderr)
-        sys.exit(1)
+    # Parse flags.
+    flags = sys.argv[6:]
+    power = "--off" not in flags
+    fan_str = None
+    swingv_str = None
+    swingh_str = None
 
-    protocol_name = params.get("protocol", "COOLIX").upper()
-    model = int(params.get("model", 1))
-    power = bool(params.get("power", True))
-    mode_str = str(params.get("mode", "auto")).lower()
-    degrees = int(round(float(params.get("degrees", 24))))
-    fan_str = params.get("fanspeed")
-    swingv_str = params.get("swingv")
-    swingh_str = params.get("swingh")
+    i = 0
+    while i < len(flags):
+        if flags[i] == "--fan" and i + 1 < len(flags):
+            fan_str = flags[i + 1]
+            i += 2
+        elif flags[i] == "--swing" and i + 1 < len(flags):
+            sw = flags[i + 1]
+            if sw in ("vertical", "on"):
+                swingv_str = sw
+            elif sw == "horizontal":
+                swingh_str = sw
+            elif sw == "both":
+                swingv_str = "vertical"
+                swingh_str = "horizontal"
+            i += 2
+        elif flags[i] == "--off":
+            i += 1  # already handled by "not in" above
+        else:
+            i += 1
 
-    # Purge stale module cache.
+    # Purge stale cache.
     sys.modules.pop("irhvac", None)
     sys.modules.pop("_irhvac", None)
 
     sys.path.insert(0, str(native_dir))
     import irhvac
 
-    # Protocol lookup — getattr values only.
+    # Protocol lookup — getattr values only (safe on musl SWIG).
     protocols: dict[str, int] = {
         a.upper(): getattr(irhvac, a)
         for a in dir(irhvac)
@@ -65,23 +83,19 @@ def main() -> None:
     if protocol_name not in protocols:
         print(f"ERROR: unknown protocol {protocol_name}", file=sys.stderr)
         sys.exit(1)
-    protocol_val = protocols[protocol_name]
 
     # Mode lookup.
     mode_map = _build_map(irhvac, "opmode_t_", strip_leading_k=True)
     mode_val = getattr(irhvac, "opmode_t_kOff", -1)
     if power and mode_str != "off":
-        if mode_str not in mode_map:
-            print(f"ERROR: unknown mode {mode_str}", file=sys.stderr)
-            sys.exit(1)
-        mode_val = mode_map[mode_str]
+        mode_val = mode_map.get(mode_str, mode_map.get("auto", 0))
 
     # Fan lookup.
     fan_map = _build_map(irhvac, "fanspeed_t_", strip_leading_k=True)
 
     # Encode.
     ac = irhvac.IRac(0)
-    ac.next.protocol = protocol_val
+    ac.next.protocol = protocols[protocol_name]
     ac.next.model = model
     ac.next.power = power
     if power:
@@ -96,10 +110,9 @@ def main() -> None:
             ac.next.swingh = getattr(irhvac, "swingh_t_kAuto",
                                      getattr(irhvac, "swingh_t_kOff", -1))
 
-    # Debug log.
     print(f"[SUBENCODE] proto={protocol_name} model={model} power={power} "
           f"mode={mode_val} degrees={degrees} fan={fan_str} "
-          f"swingv={swingv_str} swingh={swingh_str}",
+          f"sv={swingv_str} sh={swingh_str}",
           file=sys.stderr, flush=True)
 
     try:
@@ -110,7 +123,7 @@ def main() -> None:
 
     t = ac.getTiming()
     if not t:
-        print("ERROR: getTiming() returned None or empty", file=sys.stderr)
+        print("ERROR: getTiming() returned None/empty", file=sys.stderr)
         sys.exit(1)
     if len(t) < 4:
         print(json.dumps(t))
