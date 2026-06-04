@@ -94,23 +94,19 @@ def serve_forever(native_dir: str, port: int = _ENCODE_SERVER_PORT):
                     self.send_error(500, "getTiming returned None")
                     return
 
-                # ``sendAc()`` accumulates every repeat into the timing
-                # list.  Each frame copy begins with a long header mark
-                # (>4000 µs) followed by a long space.  Normal data marks
-                # are ≤2000 µs.  Count header marks and truncate at the
-                # second one so only ONE frame is sent to the emitter.
-                header_seen = 0
-                cut_at = len(t)
+                # Fujitsu ``sendAc()`` sequences: on() short-cmd +
+                # send() main frame, each with repeats → ~4+ frames in
+                # the list.  Each frame starts with header mark>2000.
+                # Keep only the FIRST frame: scan past its last data
+                # value, stop at the next header mark or 100ms marker.
+                header_count = 0
                 for i, val in enumerate(t):
-                    if i % 2 == 0 and val > 4000:
-                        header_seen += 1
-                        if header_seen >= 2:
-                            cut_at = i
+                    if val > 2000:            # header mark (no data mark is this wide)
+                        header_count += 1
+                        if header_count >= 2:
+                            t = t[:i]
                             break
-                if cut_at < len(t) and cut_at > 20:
-                    t = t[:cut_at]
-
-                # Strip trailing large gap (100 ms marker).
+                # Strip 100ms end gap.
                 while t and t[-1] > 50000:
                     t.pop()
 
