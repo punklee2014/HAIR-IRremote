@@ -94,19 +94,19 @@ def serve_forever(native_dir: str, port: int = _ENCODE_SERVER_PORT):
                     self.send_error(500, "getTiming returned None")
                     return
 
-                # Fujitsu ``sendAc()`` sequences: on() short-cmd +
-                # send() main frame, each with repeats → ~4+ frames in
-                # the list.  Each frame starts with header mark>2000.
-                # Keep only the FIRST frame: scan past its last data
-                # value, stop at the next header mark or 100ms marker.
-                header_count = 0
-                for i, val in enumerate(t):
-                    if val > 2000:            # header mark (no data mark is this wide)
-                        header_count += 1
-                        if header_count >= 2:
+                # ``sendAc()`` / ``fujitsu()`` calls ``send()`` with
+                # repeats; ``getTiming()`` concatenates them.  Only
+                # header marks (even-indexed values >2000 µs) begin a
+                # new frame.  Truncate at the second header mark so
+                # the emitter receives exactly one frame.
+                hdr = 0
+                for i in range(0, len(t), 2):  # marks only
+                    if t[i] > 2000:
+                        hdr += 1
+                        if hdr >= 2:
                             t = t[:i]
                             break
-                # Strip 100ms end gap.
+                # Strip 100ms end-of-transmission gap.
                 while t and t[-1] > 50000:
                     t.pop()
 
