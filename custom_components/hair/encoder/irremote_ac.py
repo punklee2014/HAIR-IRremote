@@ -1,8 +1,8 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
 All native code runs in a subprocess — the HA process never imports
-``irhvac`` / ``_irhvac.so``.  This prevents C++ segfaults (seen on
-musl/aarch64) from taking down Home Assistant.
+``irhvac`` / ``_irhvac.so``.  Subprocess runs ``python3 -c "<inline-code>"``
+matching the proven working manual test.
 """
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import platform
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,13 +19,12 @@ from ..models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
 
-# ---- error markers ----------------------------------------------------------
 
 class IRHVACUnavailableError(ImportError):
     """Raised when the native irhvac module cannot be loaded."""
 
 
-# ---- protocol model table (static, no native dependency) ---------------------
+# ---- protocol model table (static) ------------------------------------------
 
 PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
     "ARGO": [
@@ -100,8 +98,6 @@ PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
     ],
 }
 
-# Hardcoded protocol list (subset from IRremoteESP8266 SupportedProtocols.md).
-# Used when the native module is unavailable.
 _HARDCODED_PROTOCOLS = [
     "ARGO", "COOLIX", "DAIKIN", "DAIKIN128", "DAIKIN152", "DAIKIN160",
     "DAIKIN176", "DAIKIN2", "DAIKIN216", "DAIKIN312", "DAIKIN64",
@@ -109,17 +105,16 @@ _HARDCODED_PROTOCOLS = [
     "HAIER_AC176", "HAIER_AC_YRW02", "HITACHI_AC", "HITACHI_AC1",
     "HITACHI_AC264", "HITACHI_AC296", "HITACHI_AC344", "HITACHI_AC424",
     "KELVINATOR", "MIDEA", "MITSUBISHI_AC", "MITSUBISHI136",
-    "MITSUBISHI152", "MITSUBISHI_AC", "NEOCLIMA", "PANASONIC_AC",
+    "MITSUBISHI152", "NEOCLIMA", "PANASONIC_AC",
     "SAMSUNG_AC", "SANYO_AC", "SHARP_AC", "TCL96AC", "TECHNIBEL_AC",
     "TOSHIBA_AC", "TRANSCOLD", "TROTEC", "VESTEL_AC", "VOLTAS",
     "WHIRLPOOL_AC",
 ]
 
 
-# ---- internal: native directory resolution (no irhvac import) ----------------
+# ---- native dir -------------------------------------------------------------
 
 def _find_native_dir() -> str | None:
-    """Return the native dir containing irhvac.py + _irhvac.so, or None."""
     _NATIVE_DIR = Path(__file__).parent.parent / "native"
     machine = platform.machine()
     if machine in ("aarch64", "arm64", "armv8l", "armv8b"):
@@ -128,8 +123,6 @@ def _find_native_dir() -> str | None:
         arch = "linux_x86_64"
     else:
         arch = "linux_x86_64"
-
-    # Prefer musl, fallback glibc.
     for suffix in ("_musl", ""):
         d = _NATIVE_DIR / f"{arch}{suffix}"
         if (d / "irhvac.py").is_file() and (d / "_irhvac.so").is_file():
@@ -161,17 +154,13 @@ def get_supported_protocols() -> list[str]:
     nd = _find_native_dir()
     if nd is None:
         return list(_HARDCODED_PROTOCOLS)
-    # Try a quick subprocess to list protocols.
     try:
         proc = subprocess.run(
-            [
-                sys.executable, "-c",
-                "import sys; sys.path.insert(0, {!r}); "
-                "import irhvac; "
-                "print(repr([a for a in dir(irhvac) "
-                "if a.isupper() and not a.startswith('_') "
-                "and isinstance(getattr(irhvac, a), int)]))".format(nd),
-            ],
+            [sys.executable, "-c",
+             f"import sys; sys.path.insert(0, {nd!r}); import irhvac; "
+             "print(repr([a for a in dir(irhvac) "
+             "if a.isupper() and not a.startswith('_') "
+             "and isinstance(getattr(irhvac, a), int)]))"],
             capture_output=True, text=True, timeout=5,
         )
         if proc.returncode == 0 and proc.stdout.strip():
@@ -181,7 +170,7 @@ def get_supported_protocols() -> list[str]:
     return list(_HARDCODED_PROTOCOLS)
 
 
-# ---- public: encode (always via subprocess) ----------------------------------
+# ---- encode: inline subprocess (matching verified manual test) ---------------
 
 def encode(
     device: IRDevice,
@@ -193,48 +182,56 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    """Encode an AC state as raw IR timings via a child process."""
+    """Encode AC state.
+
+    Uses ``python3 -c "<inline-code>"`` — the exact approach verified in
+    manual testing.  No external script file is needed; all code is
+    passed as a command-line string.
+    """
     nd = _find_native_dir()
     if nd is None:
-        raise IRHVACUnavailableError(
-            "No native irhvac directory found for this platform"
+        raise IRHVACUnavailableError("No native irhvac directory found")
+
+    protocol_name = (device.ir_protocol or "").upper()
+    model = device.ir_model or 1
+    degrees = round(temperature) if temperature is not None else 24
+    fan = fan_mode or ""
+    swing = swing_mode or ""
+
+    # Inline Python: same logic as subprocess_encode.py but as a one-liner.
+    inline = (
+        f"import sys, json; sys.path.insert(0, {nd!r}); import irhvac; "
+        f"ac = irhvac.IRac(0); "
+        f"ac.next.protocol = {{a.upper(): getattr(irhvac, a) for a in dir(irhvac) if a.isupper() and not a.startswith('_') and isinstance(getattr(irhvac, a), int)}}.get({protocol_name!r}, -1); "
+        f"ac.next.model = {model}; "
+        f"ac.next.power = {power}; "
+        + (
+            f"ac.next.mode = {{k[len('opmode_t_'):].lstrip('k').lower(): getattr(irhvac, k) for k in dir(irhvac) if k.startswith('opmode_t_')}}.get({hvac_mode!r}, 0); "
+            f"ac.next.degrees = {degrees}; "
+            + (f"ac.next.fanspeed = {{k[len('fanspeed_t_'):].lstrip('k').lower(): getattr(irhvac, k) for k in dir(irhvac) if k.startswith('fanspeed_t_')}}.get({fan!r}, 0); " if fan else "")
+            + (
+                f"ac.next.swingv = getattr(irhvac, 'swingv_t_kAuto', 0) if {swing!r} in ('vertical', 'on', 'both') else 0; "
+                f"ac.next.swingh = getattr(irhvac, 'swingh_t_kAuto', 0) if {swing!r} in ('horizontal', 'both') else 0; "
+                if swing and swing != "off" else ""
+            )
         )
+        + f"ac.sendAc(); "
+        f"t = ac.getTiming(); "
+        f"print(json.dumps(t if t else []))"
+    )
 
-    script_path = str(Path(__file__).parent / "subprocess_encode.py")
-    protocol_name = (device.ir_protocol or "").strip()
+    _LOGGER.debug("Subprocess encode: %s model=%s power=%s mode=%s temp=%s fan=%s swing=%s",
+                  protocol_name, model, power, hvac_mode, degrees, fan, swing)
 
-    cmd: list[str] = [
-        sys.executable, script_path, nd,
-        protocol_name,
-        str(device.ir_model or 1),
-        hvac_mode,
-        str(round(temperature) if temperature is not None else 24),
-    ]
-    if not power:
-        cmd.append("--off")
-    if fan_mode:
-        cmd += ["--fan", fan_mode]
-    if swing_mode and swing_mode != "off":
-        cmd += ["--swing", swing_mode]
-
-    _LOGGER.info("Subprocess AC encode: %s", " ".join(cmd[2:]))
+    # Clean env: strip LD_PRELOAD etc. (proven fix from manual test).
+    clean_env: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if k not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH"):
+            clean_env[k] = v
 
     try:
-        # Clear dangerous env vars that may be inherited from HA and
-        # cause the musl .so to load wrong libraries (SIGSEGV).
-        clean_env: dict[str, str] = {}
-        for k, v in os.environ.items():
-            if k not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH"):
-                clean_env[k] = v
-
-        # Preferred: system python3 (verified working in manual test).
-        # Fallback: shutil.which, then sys.executable.
-        for py_exe in ("/usr/bin/python3", "python3", sys.executable):
-            if py_exe == sys.executable or os.path.isfile(py_exe) or shutil.which(py_exe):
-                break
-
         proc = subprocess.run(
-            [py_exe, script_path, *cmd[2:]],
+            [sys.executable, "-c", inline],
             capture_output=True,
             text=True,
             timeout=15,
@@ -254,11 +251,8 @@ def encode(
     try:
         raw: list[int] = json.loads(proc.stdout.strip())
     except json.JSONDecodeError:
-        raise RuntimeError(
-            f"AC encoder returned bad JSON: {proc.stdout[:200]}"
-        )
+        raise RuntimeError(f"AC encoder returned bad JSON: {proc.stdout[:200]}")
 
-    # Convert all-positive [mark, space, ...] to signed.
     signed: list[int] = []
     for i, val in enumerate(raw):
         if i % 2 == 0:
