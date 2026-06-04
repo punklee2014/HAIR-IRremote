@@ -64,9 +64,9 @@ trash/
 
 # Native build artifacts (compiled .so, generated .py wrappers).
 # Keep the directory structure but not the build outputs in version control.
-custom_components/hair/native/*/_irhvac.so
-custom_components/hair/native/*/irhvac.py
-custom_components/hair/native/*/__pycache__/
+custom_components/hair/native/**/_irhvac.so
+custom_components/hair/native/**/irhvac.py
+custom_components/hair/native/**/__pycache__/
 vendor/IRremoteESP8266/python/*.o
 vendor/IRremoteESP8266/python/*.cxx
 vendor/IRremoteESP8266/python/_irhvac.so

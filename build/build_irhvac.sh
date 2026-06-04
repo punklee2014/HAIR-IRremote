@@ -9,6 +9,14 @@ set -euo pipefail
 ARCH="${1:?Usage: build_irhvac.sh <x86_64|aarch64> [output_dir]}"
 OUTPUT_DIR="${2:-custom_components/hair/native/linux_${ARCH}}"
 
+# Append Python version subdirectory when PYTHON_VERSION is set (e.g. "3.14" → "py314").
+# This allows a single release to ship .so files for multiple Python ABIs.
+if [ -n "${PYTHON_VERSION:-}" ]; then
+    PYTHON_SUBDIR="py${PYTHON_VERSION//./}"
+    OUTPUT_DIR="${OUTPUT_DIR}/${PYTHON_SUBDIR}"
+    echo "PYTHON_VERSION=${PYTHON_VERSION} → subdir=${PYTHON_SUBDIR}"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON_DIR="$REPO_ROOT/vendor/IRremoteESP8266/python"

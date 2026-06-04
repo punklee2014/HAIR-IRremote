@@ -10,6 +10,7 @@ import json
 import logging
 import platform
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -47,10 +48,19 @@ def _find_native_dir() -> str | None:
         arch = "linux_aarch64"
     else:
         arch = "linux_x86_64"
+
+    # Pick versioned subdir matching runtime Python ABI (e.g. py314, py313, py312).
+    py_ver = f"py{sys.version_info.major}{sys.version_info.minor}"
+
     for suffix in ("_musl", ""):
-        d = nd_root / f"{arch}{suffix}"
+        arch_dir = nd_root / f"{arch}{suffix}"
+        # Prefer version-tagged subdirectory (multi-ABI release layout).
+        d = arch_dir / py_ver
         if (d / "irhvac.py").is_file() and (d / "_irhvac.so").is_file():
             return str(d)
+        # Fall back: flat layout (single-ABI, v0.3.0 and earlier).
+        if (arch_dir / "irhvac.py").is_file() and (arch_dir / "_irhvac.so").is_file():
+            return str(arch_dir)
     return None
 
 

@@ -1,5 +1,7 @@
 # Build environment for compiling _irhvac.so
 #
+# PYTHON_VERSION controls which Python ABI to target (3.12 / 3.13 / 3.14).
+#
 # Build for native arch:
 #   docker build -f build/docker/Dockerfile.irhvac -t irhvac-builder .
 #   docker run --rm -v $(pwd):/workspace irhvac-builder ./build/build_irhvac.sh x86_64
@@ -7,25 +9,26 @@
 # Cross-compile aarch64 (requires QEMU):
 #   docker buildx build --platform linux/arm64 -f build/docker/Dockerfile.irhvac -t irhvac-builder:arm64 --load .
 #   docker run --rm --platform linux/arm64 -v $(pwd):/workspace irhvac-builder:arm64 ./build/build_irhvac.sh aarch64
+ARG PYTHON_VERSION=3.14
 FROM ubuntu:24.04
+ARG PYTHON_VERSION
 
-# Use deadsnakes PPA for Python 3.14 (matching HA 2026.x runtime).
-# The .so must be compiled against the same Python ABI as the HA container.
+# Use deadsnakes PPA for all supported Python versions.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     make \
-    python3.14-dev \
+    python${PYTHON_VERSION}-dev \
     curl \
     ca-certificates \
     libpcre2-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Ensure python3-config points to 3.14
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1 \
-    && update-alternatives --install /usr/bin/python3-config python3-config /usr/bin/python3.14-config 1
+# Ensure python3-config points to the requested version.
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 \
+    && update-alternatives --install /usr/bin/python3-config python3-config /usr/bin/python${PYTHON_VERSION}-config 1
 
 ARG SWIG_VERSION=4.2.1
 

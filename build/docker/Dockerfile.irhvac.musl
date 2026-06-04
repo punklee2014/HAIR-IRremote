@@ -1,10 +1,16 @@
 # musl (Alpine) build for _irhvac.so — for HA on Alpine / musl libc.
 #
+# ALPINE_BASE selects the Alpine release whose python3 matches the target HA.
+#   alpine:3.21  → Python 3.12
+#   alpine:3.22  → Python 3.13
+#   alpine:edge  → Python 3.14
+#
 #   docker build -f build/docker/Dockerfile.irhvac.musl -t irhvac-builder:musl .
 #   docker run --rm -v $(pwd):/workspace irhvac-builder:musl \
 #     bash ./build/build_irhvac.sh aarch64 custom_components/hair/native/linux_aarch64_musl
 #
-FROM alpine:edge
+ARG ALPINE_BASE=alpine:edge
+FROM ${ALPINE_BASE}
 
 ARG SWIG_VERSION=4.2.1
 
