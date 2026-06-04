@@ -265,28 +265,21 @@ class HAIRClimateEntity(ClimateEntity):
 
         temp = temperature if temperature is not None else self._target_temperature
 
-        from functools import partial
-
         from .encoder.irremote_ac import encode as ac_encode
 
         _LOGGER.info(
             "Sending protocol AC command: power=%s mode=%s temp=%s fan=%s swing=%s device=%s",
             power, mode, temp, fan_mode, swing_mode, self._device.name,
         )
-
-        encode_fn = partial(
-            ac_encode,
-            self._device,
-            power=power,
-            hvac_mode=mode,
-            temperature=temp,
-            fan_mode=fan_mode or self._fan_mode,
-            swing_mode=swing_mode or self._swing_mode,
-        )
-
         try:
-            # Run in executor: subprocess.encode is blocking I/O.
-            timings = await self._manager._hass.async_add_executor_job(encode_fn)
+            timings = ac_encode(
+                self._device,
+                power=power,
+                hvac_mode=mode,
+                temperature=temp,
+                fan_mode=fan_mode or self._fan_mode,
+                swing_mode=swing_mode or self._swing_mode,
+            )
         except ImportError as err:
             _LOGGER.error(
                 "Protocol AC unavailable on %s: %s",
