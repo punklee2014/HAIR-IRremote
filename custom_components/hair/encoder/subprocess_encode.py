@@ -34,6 +34,10 @@ def main() -> None:
         )
         sys.exit(2)
 
+    # Purge stale module cache inherited from parent processes.
+    sys.modules.pop("irhvac", None)
+    sys.modules.pop("_irhvac", None)
+
     native_dir = Path(sys.argv[1])
     protocol_name = sys.argv[2].upper()
     model = int(sys.argv[3])
@@ -67,10 +71,7 @@ def main() -> None:
         else:
             i += 1
 
-    # Purge stale cache.
-    sys.modules.pop("irhvac", None)
-    sys.modules.pop("_irhvac", None)
-
+    # ---- load irhvac (in subprocess, isolated from HA) --------------------
     sys.path.insert(0, str(native_dir))
     import irhvac
 

@@ -84,8 +84,18 @@ async def _call_worker(nd: str, args: list[str]) -> list[int]:
     """
     cmd = [_get_system_python(), _worker_path(), nd] + args
 
+    # Clean env: PYTHONPATH + LD_LIBRARY_PATH point to native dir so
+    # musl's dynamic linker resolves _irhvac.so correctly.
+    clean_env = {
+        "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/tmp",
+        "PYTHONPATH": nd,
+        "LD_LIBRARY_PATH": nd,
+    }
+
     def _run():
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              env=clean_env, timeout=5)
 
     loop = asyncio.get_running_loop()
     try:
