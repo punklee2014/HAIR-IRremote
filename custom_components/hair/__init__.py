@@ -72,7 +72,9 @@ async def async_setup_entry(
     trigger_manager = TriggerManager(hass, store)
     signal_monitor = SignalMonitor(hass, signal_store, store, trigger_manager)
 
-    # Probe native encoder — just checks filesystem (no native code loaded here).
+    # The protocol encoder runs as a standalone HTTP server on
+    # http://127.0.0.1:9876/encode.  For musl/aarch64 hosts the
+    # server must be started manually (see encode_server.py).
     from .encoder.irremote_ac import probe_protocol_encoder
 
     protocol_ok, protocol_err = probe_protocol_encoder()

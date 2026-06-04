@@ -1,28 +1,20 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-Loads ``irhvac`` in-process.  The manual test:
-    cd /config/.../native/linux_aarch64_musl
-    python3 -c "import irhvac; ..."
-proves this works from the command line in the HA container.
+All native code runs in a standalone HTTP server process that HA
+communicates with over localhost.  Zero fork, zero in-process C loading.
 """
 from __future__ import annotations
 
+import json
 import logging
 import platform
-import sys
+import urllib.request
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from ..models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
-
-_irhvac: ModuleType | None = None
-
-_PROTOCOL_MAP: dict[str, int] = {}
-_MODE_MAP: dict[str, int] = {}
-_FAN_MAP: dict[str, int] = {}
 
 
 class IRHVACUnavailableError(ImportError):
@@ -50,9 +42,11 @@ PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
     "WHIRLPOOL_AC": [{"value": 1, "label": "DG11J13A (Default)"}, {"value": 2, "label": "DG11J191"}],
 }
 
+_ENCODE_SERVER_PORT = 9876
+
 
 def _find_native_dir() -> str | None:
-    _NATIVE_DIR = Path(__file__).parent.parent / "native"
+    nd_root = Path(__file__).parent.parent / "native"
     machine = platform.machine()
     if machine in ("aarch64", "arm64", "armv8l", "armv8b"):
         arch = "linux_aarch64"
@@ -61,59 +55,22 @@ def _find_native_dir() -> str | None:
     else:
         arch = "linux_x86_64"
     for suffix in ("_musl", ""):
-        d = _NATIVE_DIR / f"{arch}{suffix}"
+        d = nd_root / f"{arch}{suffix}"
         if (d / "irhvac.py").is_file() and (d / "_irhvac.so").is_file():
             return str(d)
     return None
 
 
-def _import_irhvac() -> ModuleType:
-    global _irhvac
-    if _irhvac is not None:
-        return _irhvac
-
+def probe_protocol_encoder() -> tuple[bool, str | None]:
     nd = _find_native_dir()
     if nd is None:
-        raise IRHVACUnavailableError("No native irhvac directory")
-
-    # Exactly what the manual test does.
-    import importlib
-
-    if nd not in sys.path:
-        sys.path.insert(0, nd)
-
-    mod = importlib.import_module("irhvac")
-    if not hasattr(mod, "IRac"):
-        raise IRHVACUnavailableError(f"irhvac from {nd} missing IRac")
-
-    _irhvac = mod
-    _LOGGER.info("Loaded irhvac from %s", nd)
-
-    # Build maps.
-    for attr in dir(mod):
-        if attr.isupper() and not attr.startswith("_") and isinstance(getattr(mod, attr), int):
-            _PROTOCOL_MAP[attr.upper()] = getattr(mod, attr)
-
-    _MODE_MAP["auto"] = getattr(mod, "opmode_t_kAuto", 0)
-    _MODE_MAP["cool"] = getattr(mod, "opmode_t_kCool", 1)
-    _MODE_MAP["heat"] = getattr(mod, "opmode_t_kHeat", 2)
-    _MODE_MAP["dry"] = getattr(mod, "opmode_t_kDry", 3)
-    _MODE_MAP["fan_only"] = getattr(mod, "opmode_t_kFan", 4)
-
-    _FAN_MAP["auto"] = getattr(mod, "fanspeed_t_kAuto", 0)
-    _FAN_MAP["low"] = getattr(mod, "fanspeed_t_kLow", 2)
-    _FAN_MAP["medium"] = getattr(mod, "fanspeed_t_kMedium", 3)
-    _FAN_MAP["high"] = getattr(mod, "fanspeed_t_kHigh", 4)
-
-    return mod
-
-
-def probe_protocol_encoder() -> tuple[bool, str | None]:
+        return False, "No native irhvac directory"
+    # Quick check: can we reach the server?
     try:
-        _import_irhvac()
+        _rpc({"protocol": "COOLIX", "power": False, "model": 1})
         return True, None
     except Exception as exc:
-        return False, str(exc)
+        return False, f"Encode server not reachable: {exc}"
 
 
 def is_protocol_encoder_available() -> bool:
@@ -128,11 +85,18 @@ def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str,
 
 
 def get_supported_protocols() -> list[str]:
+    return sorted(PROTOCOL_MODELS.keys())
+
+
+def _rpc(params: dict[str, Any]) -> list[int]:
+    """POST to the encode server, return raw (all-positive) timings."""
+    url = f"http://127.0.0.1:{_ENCODE_SERVER_PORT}/encode"
+    data = json.dumps(params).encode()
     try:
-        _import_irhvac()
-        return sorted(_PROTOCOL_MAP.keys())
-    except IRHVACUnavailableError:
-        return sorted(PROTOCOL_MODELS.keys())
+        with urllib.request.urlopen(url, data=data, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:
+        raise RuntimeError(f"Encode server error: {exc}") from exc
 
 
 def encode(
@@ -145,44 +109,29 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    mod = _import_irhvac()
-
-    protocol_name = (device.ir_protocol or "").upper()
-    if protocol_name not in _PROTOCOL_MAP:
-        raise ValueError(f"Unknown IR protocol '{device.ir_protocol}'")
-
-    ac = mod.IRac(0)
-    ac.next.protocol = _PROTOCOL_MAP[protocol_name]
-    ac.next.model = device.ir_model or 1
-
+    params: dict[str, Any] = {
+        "protocol": (device.ir_protocol or "COOLIX").upper(),
+        "model": device.ir_model or 1,
+        "power": power,
+    }
     if power:
-        ac.next.power = True
-        ac.next.mode = _MODE_MAP.get(hvac_mode, _MODE_MAP["auto"])
-        if temperature is not None:
-            ac.next.degrees = round(temperature)
-        if fan_mode and fan_mode in _FAN_MAP:
-            ac.next.fanspeed = _FAN_MAP[fan_mode]
-        if swing_mode:
-            if swing_mode in ("vertical", "on"):
-                ac.next.swingv = getattr(mod, "swingv_t_kAuto", 0)
-            elif swing_mode == "horizontal":
-                ac.next.swingh = getattr(mod, "swingh_t_kAuto", 0)
-            elif swing_mode == "both":
-                ac.next.swingv = getattr(mod, "swingv_t_kAuto", 0)
-                ac.next.swingh = getattr(mod, "swingh_t_kAuto", 0)
-    else:
-        ac.next.power = False
+        params["mode"] = hvac_mode
+        params["degrees"] = round(temperature) if temperature is not None else 24
+        if fan_mode:
+            params["fanspeed"] = fan_mode
+        if swing_mode and swing_mode != "off":
+            if swing_mode in ("vertical", "on", "both"):
+                params["swingv"] = 0
+            if swing_mode in ("horizontal", "both"):
+                params["swingh"] = 0
 
-    ac.sendAc()
+    _LOGGER.debug("RPC encode: %s", params)
+    raw = _rpc(params)
 
-    raw = ac.getTiming()
-    if raw is None:
-        raise RuntimeError("IRac.getTiming() returned None")
-
+    # Convert all-positive to signed.
     signed: list[int] = []
     for i, val in enumerate(raw):
         signed.append(int(val) if i % 2 == 0 else -int(val))
 
-    ac.resetTiming()
-    _LOGGER.debug("Encoded %s: %d timings", protocol_name, len(signed))
+    _LOGGER.debug("Encoded %s: %d timings", params.get("protocol"), len(signed))
     return signed
