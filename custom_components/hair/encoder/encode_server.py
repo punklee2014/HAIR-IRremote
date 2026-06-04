@@ -131,7 +131,10 @@ def serve_forever(native_dir: str, port: int = _ENCODE_SERVER_PORT):
             pass  # silent
 
     srv = HTTPServer(("127.0.0.1", port), Handler)
-    print(f"HAIR encode server ready on 127.0.0.1:{port}", flush=True)
+    # Write PID so the user can restart cleanly.
+    with open("/tmp/hair_encode_server.pid", "w") as pf:
+        pf.write(str(os.getpid()))
+    print(f"HAIR encode server ready on 127.0.0.1:{port} (pid={os.getpid()})", flush=True)
     srv.serve_forever()
 
 
