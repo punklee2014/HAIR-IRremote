@@ -77,7 +77,9 @@ async def async_setup_entry(
     # server must be started manually (see encode_server.py).
     from .encoder.irremote_ac import probe_protocol_encoder
 
-    protocol_ok, protocol_err = probe_protocol_encoder()
+    protocol_ok, protocol_err = await hass.async_add_executor_job(
+        probe_protocol_encoder
+    )
     if not protocol_ok:
         _LOGGER.warning(
             "Protocol AC encoder unavailable on this host: %s. "

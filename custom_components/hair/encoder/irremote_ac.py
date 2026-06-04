@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import platform
+import socket
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -64,13 +65,15 @@ def _find_native_dir() -> str | None:
 def probe_protocol_encoder() -> tuple[bool, str | None]:
     nd = _find_native_dir()
     if nd is None:
-        return False, "No native irhvac directory"
-    # Quick check: can we reach the server?
+        return False, "No native irhvac directory for this platform"
+    # Light probe — just test TCP connection, no HTTP body.
     try:
-        _rpc({"protocol": "COOLIX", "power": False, "model": 1})
+        import socket
+        s = socket.create_connection(("127.0.0.1", _ENCODE_SERVER_PORT), timeout=1)
+        s.close()
         return True, None
     except Exception as exc:
-        return False, f"Encode server not reachable: {exc}"
+        return False, f"Encode server not reachable on port {_ENCODE_SERVER_PORT}: {exc}"
 
 
 def is_protocol_encoder_available() -> bool:
