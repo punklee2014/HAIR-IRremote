@@ -1,15 +1,15 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-Pure positional string argv — no JSON, no stdin pipe, no shell interpolation.
-Optimized for high-performance sandboxing under Python 3.14 + musl-libc.
+Persistent daemon worker — single long-lived subprocess for all encode calls.
+Communicates via stdin/stdout JSON line protocol.
 """
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import platform
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -59,51 +59,98 @@ def _worker_path() -> str:
     return str(Path(__file__).parent / "subprocess_encode.py")
 
 
-_SYS_PYTHON: str | None = None
+# ── persistent daemon worker ─────────────────────────────────────────────────
+
+_worker_proc: subprocess.Popen | None = None
+_worker_nd: str | None = None
 
 
-def _get_system_python() -> str:
-    global _SYS_PYTHON
-    if _SYS_PYTHON is not None:
-        return _SYS_PYTHON
-    for candidate in ("python3", "/usr/bin/python3", "/usr/local/bin/python3"):
-        found = shutil.which(candidate)
-        if found and Path(found).is_file():
-            _SYS_PYTHON = found
-            return found
-    raise IRHVACUnavailableError("Cannot find system python3")
+def _start_worker(nd: str) -> subprocess.Popen:
+    """Start daemon via /bin/sh -c to replicate proven shell environment."""
+    shell_cmd = f"cd {nd} && exec python3 {_worker_path()} --daemon {nd}"
+    return subprocess.Popen(
+        ["/bin/sh", "-c", shell_cmd],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
 
-async def _call_worker(nd: str, args: list[str]) -> list[int]:
-    """通过 /bin/sh -c 拉起子进程，完全匹配已验证的命令行格式。
+def _stop_worker() -> None:
+    global _worker_proc, _worker_nd
+    proc = _worker_proc
+    _worker_proc = None
+    _worker_nd = None
+    if proc is None:
+        return
+    try:
+        proc.stdin.close()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
 
-    shell_cmd = cd {nd} && python3 {worker} {nd} {args}
+
+atexit.register(_stop_worker)
+
+
+async def _call_worker(nd: str, request: dict[str, Any]) -> list[int]:
+    """Send JSON request to daemon worker, return timing list.
+
+    Auto-starts worker on first call; auto-restarts if worker dies.
     """
-    shell_cmd = f"cd {nd} && python3 {_worker_path()} {nd} {' '.join(args)}"
-
-    def _run():
-        return subprocess.run(
-            ["/bin/sh", "-c", shell_cmd],
-            capture_output=True, text=True, timeout=5,
-        )
+    global _worker_proc, _worker_nd
 
     loop = asyncio.get_running_loop()
-    try:
-        res = await loop.run_in_executor(None, _run)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("Encoder subprocess timed out")
 
-    if res.returncode != 0:
-        err_msg = (res.stderr or "").strip() or (res.stdout or "").strip()
-        _LOGGER.error("Subprocess crashed! exit=%s, details=%s", res.returncode, err_msg)
-        raise RuntimeError(
-            f"Encoder subprocess exited {res.returncode}: {err_msg[:300] or 'no output'}"
-        )
+    def _send_recv() -> list[int]:
+        nonlocal _worker_proc, _worker_nd
 
-    try:
-        return json.loads(res.stdout.strip())
-    except json.JSONDecodeError:
-        raise RuntimeError(f"Encoder returned bad JSON: {res.stdout[:200]}")
+        # Start or reset worker if needed.
+        if _worker_proc is None or _worker_proc.poll() is not None or _worker_nd != nd:
+            _stop_worker()
+            _worker_proc = _start_worker(nd)
+            _worker_nd = nd
+
+        line = json.dumps(request) + "\n"
+        proc = _worker_proc
+
+        try:
+            proc.stdin.write(line)
+            proc.stdin.flush()
+            resp_line = proc.stdout.readline()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            _LOGGER.error("Worker pipe broken: %s", exc)
+            _stop_worker()
+            raise RuntimeError(f"Encoder worker communication failed: {exc}")
+
+        if not resp_line:
+            exit_code = proc.poll()
+            _LOGGER.error("Worker died! exit=%s", exit_code)
+            _stop_worker()
+            raise RuntimeError(
+                f"Encoder worker exited unexpectedly (exit={exit_code})"
+            )
+
+        resp_line = resp_line.strip()
+        try:
+            data = json.loads(resp_line)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"Worker returned bad JSON: {resp_line[:200]}")
+
+        if isinstance(data, dict) and "err" in data:
+            raise RuntimeError(f"Encoder error: {data['err']}")
+
+        if not isinstance(data, list):
+            raise RuntimeError(f"Worker returned non-list: {resp_line[:200]}")
+
+        return data
+
+    return await loop.run_in_executor(None, _send_recv)
 
 
 # ── public API ───────────────────────────────────────────────────────────────
@@ -139,23 +186,23 @@ async def encode(
     **__: Any,
 ) -> list[int]:
     nd = _find_native_dir()
-    proto = (device.ir_protocol or "COOLIX").upper()
-    model = str(device.ir_model or 1)
-    mode = str(hvac_mode).lower()
-    
-    # 【最强防线】：在序列化前，彻底把 float 锤成纯净的纯整数文本（拒绝产生 "24.0"）
-    temp = str(int(round(float(temperature if temperature is not None else 24))))
-
-    # 严格按照位置组装 args
-    args = [proto, model, mode, temp]
-    if not power:
-        args.append("--off")
+    request: dict[str, Any] = {
+        "proto": (device.ir_protocol or "COOLIX").upper(),
+        "model": int(device.ir_model or 1),
+        "mode": str(hvac_mode).lower(),
+        "degrees": int(round(float(temperature if temperature is not None else 24))),
+        "power": power,
+    }
     if fan_mode:
-        args.extend(["--fan", str(fan_mode).lower()])
+        request["fan"] = str(fan_mode).lower()
     if swing_mode and swing_mode != "off":
-        args.extend(["--swing", str(swing_mode).lower()])
+        sw = str(swing_mode).lower()
+        if sw in ("vertical", "on", "both"):
+            request["swingv"] = "vertical"
+        if sw in ("horizontal", "both"):
+            request["swingh"] = "horizontal"
 
-    raw = await _call_worker(nd, args)
+    raw = await _call_worker(nd, request)
 
     signed: list[int] = []
     for i, val in enumerate(raw):
