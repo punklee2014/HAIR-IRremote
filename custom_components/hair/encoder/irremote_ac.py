@@ -1,12 +1,8 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-All native code runs in a lightweight background HTTP server (started
-automatically by HA on setup, killed on unload).  HA communicates via
-http://127.0.0.1:9876/encode.
-
-This is the ONLY crash-safe approach for musl/aarch64 — process-internal
-irhvac loading causes SIGSEGV due to libpython ABI conflict with HA's
-Python runtime.
+Each encode runs as a one-shot ``python3`` subprocess — reads JSON params
+from stdin, imports ``irhvac``, encodes, prints JSON timings to stdout.
+Zero in-process C loading, zero daemon, zero port.
 """
 from __future__ import annotations
 
@@ -14,23 +10,18 @@ import json
 import logging
 import os
 import platform
-import signal
-import socket
 import subprocess
-import sys
-import time
-import urllib.request
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from threading import Thread
 from typing import Any
 
 from ..models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
 
-_ENCODE_SERVER_PORT = 9876
-_SERVER_PROC: subprocess.Popen | None = None
+
+class IRHVACUnavailableError(ImportError):
+    pass
+
 
 PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
     "ARGO": [{"value": 1, "label": "SAC_WREM2 (Default)"}, {"value": 2, "label": "SAC_WREM3"}],
@@ -50,83 +41,6 @@ PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
 }
 
 
-class IRHVACUnavailableError(ImportError):
-    pass
-
-
-# ── encode server (runs as independent python3 process) ──────────────────────
-
-_ENCODE_SERVER_CODE = r"""
-import json, os, sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
-native_dir = os.environ["HAIR_NATIVE_DIR"]
-sys.path.insert(0, native_dir)
-import irhvac
-
-PROTO = {a.upper(): getattr(irhvac, a) for a in dir(irhvac)
-         if a.isupper() and not a.startswith("_") and isinstance(getattr(irhvac, a), int)}
-MODE = {
-    "off": getattr(irhvac, "opmode_t_kOff", -1),
-    "auto": getattr(irhvac, "opmode_t_kAuto", 0),
-    "cool": getattr(irhvac, "opmode_t_kCool", 1),
-    "heat": getattr(irhvac, "opmode_t_kHeat", 2),
-    "dry": getattr(irhvac, "opmode_t_kDry", 3),
-    "fan_only": getattr(irhvac, "opmode_t_kFan", 4),
-}
-FAN = {
-    "auto": getattr(irhvac, "fanspeed_t_kAuto", 0),
-    "low": getattr(irhvac, "fanspeed_t_kLow", 2),
-    "medium": getattr(irhvac, "fanspeed_t_kMedium", 3),
-    "high": getattr(irhvac, "fanspeed_t_kHigh", 4),
-}
-SWINGV = getattr(irhvac, "swingv_t_kAuto", 0)
-SWINGH = getattr(irhvac, "swingh_t_kAuto", 0)
-
-class H(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != "/encode":
-            self.send_error(404); return
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-            p = json.loads(self.rfile.read(length))
-        except Exception:
-            self.send_error(400); return
-        try:
-            ac = irhvac.IRac(0)
-            ac.next.protocol = PROTO.get(p.get("protocol","COOLIX").upper(), 15)
-            ac.next.model = p.get("model", 1)
-            ac.next.power = bool(p.get("power", True))
-            if ac.next.power:
-                ac.next.mode = MODE.get(p.get("mode","auto"), MODE["auto"])
-                ac.next.degrees = p.get("degrees", 24)
-                fs = p.get("fanspeed")
-                if fs: ac.next.fanspeed = FAN.get(fs, FAN["auto"])
-                if "swingv" in p: ac.next.swingv = p["swingv"]
-                if "swingh" in p: ac.next.swingh = p["swingh"]
-            ac.sendAc()
-            t = ac.getTiming()
-            if t is None:
-                self.send_error(500); return
-            # truncate to single frame
-            hdr = 0
-            for i in range(0, len(t), 2):
-                if t[i] > 2000:
-                    hdr += 1
-                    if hdr >= 2: t = t[:i]; break
-            while t and t[-1] > 50000: t.pop()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(t).encode())
-        except Exception as e:
-            self.send_error(500, str(e))
-    def log_message(self, f, *a): pass
-
-HTTPServer(("127.0.0.1", int(os.environ.get("HAIR_PORT", "9876"))), H).serve_forever()
-"""
-
-
 def _find_native_dir() -> str | None:
     nd_root = Path(__file__).parent.parent / "native"
     machine = platform.machine()
@@ -141,81 +55,10 @@ def _find_native_dir() -> str | None:
     return None
 
 
-def start_encode_server(hass) -> None:
-    """Start the encode server as an independent subprocess."""
-    global _SERVER_PROC
-    if _SERVER_PROC is not None and _SERVER_PROC.poll() is None:
-        return  # already running
-
-    nd = _find_native_dir()
-    if nd is None:
-        _LOGGER.warning("Cannot start encode server: no native dir found")
-        return
-
-    env = os.environ.copy()
-    env["HAIR_NATIVE_DIR"] = nd
-    env["HAIR_PORT"] = str(_ENCODE_SERVER_PORT)
-    # Strip musl-hostile variables
-    for v in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH"):
-        env.pop(v, None)
-
-    # Use system python3 (NOT sys.executable — HA's Python 3.14 runtime
-    # has ABI differences with the musl .so).  System python3 was verified
-    # to work correctly in manual testing.
-    py_exe = "python3"
-
-    try:
-        _SERVER_PROC = subprocess.Popen(
-            [py_exe, "-c", _ENCODE_SERVER_CODE],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            start_new_session=True,  # survive HA restart
-        )
-    except Exception as exc:
-        _LOGGER.warning("Failed to start encode server: %s", exc)
-        return
-
-    # Wait for server to be ready.
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        try:
-            s = socket.create_connection(("127.0.0.1", _ENCODE_SERVER_PORT), timeout=0.5)
-            s.close()
-            _LOGGER.info("Encode server ready (pid %s)", _SERVER_PROC.pid)
-            return
-        except (OSError, ConnectionRefusedError):
-            time.sleep(0.1)
-    _LOGGER.warning("Encode server did not become ready within 3s")
-
-
-def stop_encode_server() -> None:
-    global _SERVER_PROC
-    if _SERVER_PROC is not None:
-        try:
-            _SERVER_PROC.send_signal(signal.SIGTERM)
-            _SERVER_PROC.wait(timeout=2)
-        except Exception:
-            try:
-                _SERVER_PROC.kill()
-            except Exception:
-                pass
-        _SERVER_PROC = None
-        _LOGGER.info("Encode server stopped")
-
-
-# ── public API ───────────────────────────────────────────────────────────────
-
 def probe_protocol_encoder() -> tuple[bool, str | None]:
     if _find_native_dir() is None:
         return False, "No native irhvac directory"
-    try:
-        s = socket.create_connection(("127.0.0.1", _ENCODE_SERVER_PORT), timeout=1)
-        s.close()
-        return True, None
-    except Exception as exc:
-        return False, f"Encode server not reachable: {exc}"
+    return True, None
 
 
 def is_protocol_encoder_available() -> bool:
@@ -232,12 +75,116 @@ def get_supported_protocols() -> list[str]:
     return sorted(PROTOCOL_MODELS.keys())
 
 
-def _rpc(params: dict[str, Any]) -> list[int]:
-    url = f"http://127.0.0.1:{_ENCODE_SERVER_PORT}/encode"
-    data = json.dumps(params).encode()
-    with urllib.request.urlopen(url, data=data, timeout=10) as resp:
-        return json.loads(resp.read().decode())
+# ── one-shot subprocess encoder ──────────────────────────────────────────────
 
+# Inline Python 3 script that reads JSON params from stdin, imports irhvac,
+# calls sendAc(), and prints JSON timings to stdout.  This script is passed
+# as ``-c`` to ``python3`` (the system interpreter), never run in the HA
+# process.
+_ENCODE_INLINE = r"""
+import json, sys
+native_dir = sys.argv[1]
+sys.path.insert(0, native_dir)
+import irhvac
+
+p = json.loads(sys.stdin.read())
+
+def _attrs(prefix, strip_k=False):
+    m = {}
+    for a in dir(irhvac):
+        if a.startswith(prefix):
+            k = a[len(prefix):]
+            if strip_k and k.startswith("k"):
+                k = k[1:]
+            if k:
+                m[k.lower()] = getattr(irhvac, a)
+    return m
+
+# protocol: uses decode_type_t constants (all UPPER + not starting with _)
+protocols = {
+    a.upper(): getattr(irhvac, a)
+    for a in dir(irhvac)
+    if a.isupper() and not a.startswith("_") and isinstance(getattr(irhvac, a), int)
+}
+proto_name = p.get("protocol", "COOLIX").upper()
+if proto_name not in protocols:
+    print(f"ERROR: unknown protocol {proto_name}", file=sys.stderr); sys.exit(1)
+
+modes = _attrs("opmode_t_", strip_k=True)
+fans  = _attrs("fanspeed_t_", strip_k=True)
+
+ac = irhvac.IRac(0)
+ac.next.protocol = protocols[proto_name]
+ac.next.model       = int(p.get("model", 1))
+ac.next.power       = bool(p.get("power", True))
+if ac.next.power:
+    ac.next.mode    = modes.get(p.get("mode", "auto"), 0)
+    ac.next.degrees  = float(p.get("degrees", 24))
+    fs = p.get("fanspeed")
+    if fs:
+        ac.next.fanspeed = fans.get(str(fs).lower(), 0)
+    sv = p.get("swingv")
+    if sv is not None:
+        ac.next.swingv = int(sv)
+    sh = p.get("swingh")
+    if sh is not None:
+        ac.next.swingh = int(sh)
+
+ac.sendAc()
+t = ac.getTiming()
+if t is None:
+    print("ERROR: getTiming returned None", file=sys.stderr); sys.exit(1)
+
+# truncate to one frame
+hdr = 0
+for i in range(0, len(t), 2):
+    if t[i] > 2000:
+        hdr += 1
+        if hdr >= 2:
+            t = t[:i]; break
+while t and t[-1] > 50000:
+    t.pop()
+
+print(json.dumps(t))
+"""
+
+
+def _encode_subprocess(native_dir: str, params: dict[str, Any]) -> list[int]:
+    """Run the inline encoder via system ``python3``.
+
+    Reads JSON params from stdin, writes JSON timings to stdout.
+    If the subprocess crashes the HA process is unaffected.
+    """
+    clean_env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH")
+    }
+
+    try:
+        proc = subprocess.run(
+            ["python3", "-c", _ENCODE_INLINE, native_dir],
+            input=json.dumps(params),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=clean_env,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("AC encoder subprocess timed out")
+    except FileNotFoundError:
+        raise RuntimeError("System python3 not found — is it installed?")
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()[:300]
+        raise RuntimeError(f"Encoder subprocess exited {proc.returncode}: {err}")
+
+    try:
+        return json.loads(proc.stdout.strip())
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Encoder returned bad JSON: {proc.stdout[:200]}")
+
+
+# ── public encode ────────────────────────────────────────────────────────────
 
 def encode(
     device: IRDevice,
@@ -249,10 +196,19 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
+    """Encode AC state via a stateless ``python3`` subprocess.
+
+    The subprocess imports ``irhvac`` and does ALL protocol/mode/fan
+    lookups.  No native code ever runs inside HA.
+    """
+    nd = _find_native_dir()
+    if nd is None:
+        raise IRHVACUnavailableError("No native irhvac directory")
+
     params: dict[str, Any] = {
         "protocol": (device.ir_protocol or "COOLIX").upper(),
         "model": device.ir_model or 1,
-        "power": power,
+        "power": bool(power),
     }
     if power:
         params["mode"] = hvac_mode
@@ -265,8 +221,12 @@ def encode(
             if swing_mode in ("horizontal", "both"):
                 params["swingh"] = 0
 
-    raw = _rpc(params)
+    _LOGGER.debug("Subprocess encode: %s", params)
+
+    raw = _encode_subprocess(nd, params)
+
     signed: list[int] = []
     for i, val in enumerate(raw):
         signed.append(int(val) if i % 2 == 0 else -int(val))
+
     return signed
