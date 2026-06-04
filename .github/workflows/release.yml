@@ -59,8 +59,8 @@ jobs:
         with:
           name: native-${{ matrix.arch }}-py${{ matrix.python }}
           path: |
-            custom_components/hair/native/${{ matrix.arch }}/py${{ matrix.python | replace('.', '') }}/_irhvac.so
-            custom_components/hair/native/${{ matrix.arch }}/py${{ matrix.python | replace('.', '') }}/irhvac.py
+            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/_irhvac.so
+            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/irhvac.py
 
   build-native-musl:
     name: Build native musl (${{ matrix.arch }} ${{ matrix.alpine }})
@@ -139,8 +139,8 @@ jobs:
         with:
           name: native-${{ matrix.arch }}-py${{ matrix.python }}
           path: |
-            custom_components/hair/native/${{ matrix.arch }}/py${{ matrix.python | replace('.', '') }}/_irhvac.so
-            custom_components/hair/native/${{ matrix.arch }}/py${{ matrix.python | replace('.', '') }}/irhvac.py
+            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/_irhvac.so
+            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/irhvac.py
 
   release:
     name: Create Release

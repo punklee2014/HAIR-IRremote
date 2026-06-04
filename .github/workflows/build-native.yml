@@ -64,7 +64,7 @@ jobs:
         with:
           name: native-${{ matrix.arch }}-py${{ matrix.python }}
           path: |
-            custom_components/hair/native/${{ matrix.arch }}/py${{ matrix.python | replace('.', '') }}/_irhvac.so
+            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/_irhvac.so
 
   build-musl:
     name: Build _irhvac.so musl (${{ matrix.arch }} ${{ matrix.alpine }})
@@ -143,4 +143,4 @@ jobs:
         with:
           name: native-${{ matrix.arch }}-py${{ matrix.python }}
           path: |
-            custom_components/hair/native/${{ matrix.arch }}/py${{ matrix.python | replace('.', '') }}/_irhvac.so
+            custom_components/hair/native/${{ matrix.arch }}/py${{ replace(matrix.python, '.', '') }}/_irhvac.so
