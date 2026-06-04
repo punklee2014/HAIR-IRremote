@@ -1,12 +1,11 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-Persistent daemon worker — single long-lived subprocess for all encode calls.
-Communicates via stdin/stdout JSON line protocol.
+One-shot subprocess worker — each encode call spawns via /bin/sh -c
+for reliable native library loading, communicating via stdin/stdout JSON.
 """
 from __future__ import annotations
 
 import asyncio
-import atexit
 import json
 import logging
 import platform
@@ -59,98 +58,84 @@ def _worker_path() -> str:
     return str(Path(__file__).parent / "subprocess_encode.py")
 
 
-# ── persistent daemon worker ─────────────────────────────────────────────────
+# ── one-shot subprocess worker ────────────────────────────────────────────────
 
-_worker_proc: subprocess.Popen | None = None
-_worker_nd: str | None = None
-
-
-def _start_worker(nd: str) -> subprocess.Popen:
-    """Start daemon via /bin/sh -c to replicate proven shell environment."""
-    shell_cmd = f"cd {nd} && exec python3 {_worker_path()} --daemon {nd}"
-    return subprocess.Popen(
-        ["/bin/sh", "-c", shell_cmd],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+_ENCODE_TIMEOUT = 10  # seconds
+_probe_result: bool | None = None  # module-level cache: True if .so loads
 
 
-def _stop_worker() -> None:
-    global _worker_proc, _worker_nd
-    proc = _worker_proc
-    _worker_proc = None
-    _worker_nd = None
-    if proc is None:
-        return
+def _check_native(nd: str) -> bool:
+    """Run probe once: can the native .so be loaded in a subprocess?
+
+    Caches result; returns True if probe exits 0.
+    """
+    global _probe_result
+    if _probe_result is not None:
+        return _probe_result
+
+    shell_cmd = f"cd {nd} && python3 {_worker_path()} --probe {nd}"
     try:
-        proc.stdin.close()
-    except Exception:
-        pass
-    try:
-        proc.wait(timeout=2)
+        proc = subprocess.run(
+            ["/bin/sh", "-c", shell_cmd],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=2)
+        _LOGGER.error("Native probe timed out")
+        _probe_result = False
+        return False
 
-
-atexit.register(_stop_worker)
+    ok = proc.returncode == 0
+    stderr_tail = proc.stderr.strip()[-200:] if proc.stderr else ""
+    if ok:
+        _LOGGER.info("Native probe succeeded: %s", stderr_tail)
+    else:
+        _LOGGER.error(
+            "Native probe FAILED (exit=%s): %s", proc.returncode, stderr_tail
+        )
+    _probe_result = ok
+    return ok
 
 
 async def _call_worker(nd: str, request: dict[str, Any]) -> list[int]:
-    """Send JSON request to daemon worker, return timing list.
-
-    Auto-starts worker on first call; auto-restarts if worker dies.
-    """
-    global _worker_proc, _worker_nd
-
+    """Run a one-shot subprocess encode via /bin/sh -c (proven environment)."""
     loop = asyncio.get_running_loop()
 
-    def _send_recv() -> list[int]:
-        global _worker_proc, _worker_nd
-
-        # Start or reset worker if needed.
-        if _worker_proc is None or _worker_proc.poll() is not None or _worker_nd != nd:
-            _stop_worker()
-            _worker_proc = _start_worker(nd)
-            _worker_nd = nd
-
-        line = json.dumps(request) + "\n"
-        proc = _worker_proc
-
+    def _run_oneshot() -> list[int]:
+        shell_cmd = f"cd {nd} && python3 {_worker_path()} --once {nd}"
         try:
-            proc.stdin.write(line)
-            proc.stdin.flush()
-            resp_line = proc.stdout.readline()
-        except (BrokenPipeError, OSError, ValueError) as exc:
-            _LOGGER.error("Worker pipe broken: %s", exc)
-            _stop_worker()
-            raise RuntimeError(f"Encoder worker communication failed: {exc}")
+            proc = subprocess.run(
+                ["/bin/sh", "-c", shell_cmd],
+                input=json.dumps(request),
+                capture_output=True,
+                text=True,
+                timeout=_ENCODE_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Encoder timed out after {_ENCODE_TIMEOUT}s")
 
-        if not resp_line:
-            exit_code = proc.poll()
-            _LOGGER.error("Worker died! exit=%s", exit_code)
-            _stop_worker()
+        stderr_tail = proc.stderr[-500:] if proc.stderr else ""
+        if proc.returncode != 0:
+            _LOGGER.error("Encoder exit=%s stderr=%s", proc.returncode, stderr_tail)
             raise RuntimeError(
-                f"Encoder worker exited unexpectedly (exit={exit_code})"
+                f"Encoder failed (exit={proc.returncode}): {stderr_tail}"
             )
 
-        resp_line = resp_line.strip()
         try:
-            data = json.loads(resp_line)
+            data = json.loads(proc.stdout.strip())
         except json.JSONDecodeError:
-            raise RuntimeError(f"Worker returned bad JSON: {resp_line[:200]}")
+            raise RuntimeError(f"Encoder returned bad JSON: {proc.stdout[:200]}")
 
         if isinstance(data, dict) and "err" in data:
             raise RuntimeError(f"Encoder error: {data['err']}")
 
         if not isinstance(data, list):
-            raise RuntimeError(f"Worker returned non-list: {resp_line[:200]}")
+            raise RuntimeError(f"Encoder returned non-list: {proc.stdout[:200]}")
 
         return data
 
-    return await loop.run_in_executor(None, _send_recv)
+    return await loop.run_in_executor(None, _run_oneshot)
 
 
 # ── public API ───────────────────────────────────────────────────────────────
@@ -186,6 +171,11 @@ async def encode(
     **__: Any,
 ) -> list[int]:
     nd = _find_native_dir()
+    if not _check_native(nd):
+        raise RuntimeError(
+            "Native encoder probe failed — irhvac .so may be incompatible "
+            "with this Python version. Check HA logs for probe details."
+        )
     request: dict[str, Any] = {
         "proto": (device.ir_protocol or "COOLIX").upper(),
         "model": int(device.ir_model or 1),

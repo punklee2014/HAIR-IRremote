@@ -141,6 +141,144 @@ def daemon_main(native_dir: str) -> None:
 
         _respond(_trim_timing(t))
 
+
+def once_main(native_dir: str) -> None:
+    """One-shot JSON mode: read a single JSON request from stdin, print JSON result, exit."""
+    sys.path.insert(0, native_dir)
+    import irhvac
+
+    # ── one-time lookups ─────────────────────────────────────────────────
+    protocols: dict[str, int] = {
+        a.upper(): getattr(irhvac, a)
+        for a in dir(irhvac)
+        if a.isupper() and not a.startswith("_") and isinstance(getattr(irhvac, a), int)
+    }
+    mode_map = _build_map(irhvac, "opmode_t_", strip_leading_k=True)
+    mode_off = getattr(irhvac, "opmode_t_kOff", -1)
+    fan_map = _build_map(irhvac, "fanspeed_t_", strip_leading_k=True)
+    swingv_auto = getattr(irhvac, "swingv_t_kAuto", getattr(irhvac, "swingv_t_kOff", -1))
+    swingh_auto = getattr(irhvac, "swingh_t_kAuto", getattr(irhvac, "swingh_t_kOff", -1))
+
+    def _respond(payload: Any) -> None:
+        sys.stdout.write(json.dumps(payload) + "\n")
+        sys.stdout.flush()
+
+    line = sys.stdin.readline()
+    if not line:
+        _respond({"err": "no input on stdin"})
+        sys.exit(1)
+
+    line = line.strip()
+    try:
+        req: dict[str, Any] = json.loads(line)
+    except json.JSONDecodeError as exc:
+        _respond({"err": f"bad json: {exc}"})
+        sys.exit(1)
+
+    proto_name = str(req.get("proto", "")).upper()
+    model = int(req.get("model", 1))
+    mode_str = str(req.get("mode", "auto")).lower()
+    degrees = int(round(float(req.get("degrees", 24))))
+    power = bool(req.get("power", True))
+    fan_str = str(req.get("fan", "")).lower() if req.get("fan") else ""
+    swingv_str = str(req.get("swingv", "")).lower() if req.get("swingv") else ""
+    swingh_str = str(req.get("swingh", "")).lower() if req.get("swingh") else ""
+
+    if proto_name not in protocols:
+        _respond({"err": f"unknown protocol {proto_name}"})
+        sys.exit(1)
+
+    mode_val = mode_off
+    if power and mode_str != "off":
+        mode_val = mode_map.get(mode_str, mode_map.get("auto", 0))
+
+    ac = irhvac.IRac(0)
+    ac.next.protocol = protocols[proto_name]
+    ac.next.model = model
+    ac.next.power = power
+    if power:
+        ac.next.mode = mode_val
+        ac.next.degrees = degrees
+        if fan_str and fan_str in fan_map:
+            ac.next.fanspeed = fan_map[fan_str]
+        if swingv_str:
+            ac.next.swingv = swingv_auto
+        if swingh_str:
+            ac.next.swingh = swingh_auto
+
+    print(
+        f"[SUBENCODE] proto={proto_name} model={model} power={power} "
+        f"mode={mode_val} degrees={degrees} fan={fan_str} "
+        f"sv={swingv_str} sh={swingh_str}",
+        file=sys.stderr, flush=True,
+    )
+
+    try:
+        ac.sendAc()
+    except Exception as exc:
+        _respond({"err": f"sendAc() failed: {exc}"})
+        sys.exit(1)
+
+    t = ac.getTiming()
+    if not t:
+        _respond({"err": "getTiming() returned None/empty"})
+        sys.exit(1)
+
+    _respond(_trim_timing(t))
+
+
+def probe_main(native_dir: str) -> None:
+    """Diagnostic mode: import irhvac, run a real sendAc() to verify .so works.
+
+    Exit 0 on success, exit 1 with message on stderr on failure.
+    Used by irremote_ac.py at startup to check whether the native code is functional.
+    """
+    sys.path.insert(0, native_dir)
+    import irhvac
+
+    # Touch a few key attributes to verify the module is functional.
+    try:
+        _ = irhvac.IRac
+        _ = irhvac.IRac.sendAc  # unbound method reference
+    except AttributeError as exc:
+        print(f"PROBE FAIL: missing expected attribute: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    # Build protocol map to find a valid protocol integer
+    protocols: dict[str, int] = {}
+    for a in dir(irhvac):
+        if a.isupper() and not a.startswith("_") and isinstance(getattr(irhvac, a), int):
+            protocols[a] = getattr(irhvac, a)
+
+    if not protocols:
+        print("PROBE FAIL: no protocol constants found", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    # Pick the first available protocol and exercise the full native code path:
+    # IRac() → set protocol → sendAc() → getTiming()
+    # This catches SIGSEGV / ABI incompatibility that a plain import misses.
+    proto_name, proto_val = next(iter(protocols.items()))
+    mode_off = getattr(irhvac, "opmode_t_kOff", -1)
+
+    try:
+        ac = irhvac.IRac(0)
+        ac.next.protocol = proto_val
+        ac.next.model = 1
+        ac.next.power = True
+        ac.next.mode = mode_off
+        ac.next.degrees = 24
+        ac.sendAc()
+        t = ac.getTiming()
+    except Exception as exc:
+        print(f"PROBE FAIL: sendAc() raised: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    timing_count = len(t) if t else 0
+    print(f"PROBE OK: proto={proto_name} protocols={len(protocols)} timing_len={timing_count}",
+          file=sys.stderr, flush=True)
+    sys.exit(0)
+
+
 def oneshot_main() -> None:
     """One-shot mode: positional argv, print JSON, exit."""
     if len(sys.argv) < 6:
@@ -243,5 +381,9 @@ def oneshot_main() -> None:
 if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "--daemon":
         daemon_main(sys.argv[2])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--once":
+        once_main(sys.argv[2])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--probe":
+        probe_main(sys.argv[2])
     else:
         oneshot_main()

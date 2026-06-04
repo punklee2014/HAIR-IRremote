@@ -108,7 +108,7 @@ class HAIRClimateEntity(ClimateEntity):
         self._attr_unique_id = f"hair_{device.id}_climate"
         self._attr_name = None
         self._hvac_mode = HVACMode.OFF
-        self._target_temperature: float | None = 24  # default for protocol AC
+        self._target_temperature: float | None = 24.0  # default for protocol AC
         self._fan_mode: str | None = "auto"
         self._swing_mode: str | None = "off"
         _LOGGER.info(

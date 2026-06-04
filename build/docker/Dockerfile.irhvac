@@ -9,14 +9,23 @@
 #   docker run --rm --platform linux/arm64 -v $(pwd):/workspace irhvac-builder:arm64 ./build/build_irhvac.sh aarch64
 FROM ubuntu:24.04
 
+# Use deadsnakes PPA for Python 3.14 (matching HA 2026.x runtime).
+# The .so must be compiled against the same Python ABI as the HA container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     make \
-    python3-dev \
+    python3.14-dev \
     curl \
     ca-certificates \
     libpcre2-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Ensure python3-config points to 3.14
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.14 1 \
+    && update-alternatives --install /usr/bin/python3-config python3-config /usr/bin/python3.14-config 1
 
 ARG SWIG_VERSION=4.2.1
 

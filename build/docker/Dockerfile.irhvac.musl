@@ -4,7 +4,7 @@
 #   docker run --rm -v $(pwd):/workspace irhvac-builder:musl \
 #     bash ./build/build_irhvac.sh aarch64 custom_components/hair/native/linux_aarch64_musl
 #
-FROM alpine:3.21
+FROM alpine:edge
 
 ARG SWIG_VERSION=4.2.1
 
