@@ -239,16 +239,31 @@ def encode(
     if swing_mode and swing_mode != "off":
         args += ["--swing", swing_mode]
 
-    clean_env = {
-        k: v for k, v in os.environ.items()
-        if k not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH")
-    }
+    # Minimal env — only PATH + HOME.  Strip everything else.
+    # The manual test proves this works; we match it exactly.
+    minimal_env: dict[str, str] = {}
+    for want in ("PATH", "HOME", "USER", "TMPDIR", "TEMP"):
+        if want in os.environ:
+            minimal_env[want] = os.environ[want]
 
-    _LOGGER.debug("Subprocess: %s", " ".join(args[3:]))
+    # Full command for debugging.
+    cmd_str = " ".join(args)
+    _LOGGER.info("Subprocess encode: %s (script=%s env_keys=%s)",
+                 cmd_str[cmd_str.index(" --off") if "--off" in cmd_str else len(cmd_str)//2:],
+                 script,
+                 sorted(minimal_env.keys()))
 
     try:
-        proc = subprocess.run(args, capture_output=True, text=True,
-                              timeout=15, env=clean_env)
+        # Use shell=True so the linker environment matches the
+        # proven-working manual test exactly.
+        proc = subprocess.run(
+            cmd_str,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=minimal_env,
+        )
     except subprocess.TimeoutExpired:
         raise RuntimeError("AC encoder timed out")
 
@@ -256,7 +271,8 @@ def encode(
         err = (proc.stderr or "").strip()[:500]
         out = (proc.stdout or "").strip()[:200]
         raise RuntimeError(
-            f"AC encoder exited {proc.returncode}: stderr={err} stdout={out}"
+            f"AC encoder exited {proc.returncode}: stderr={err} stdout={out} "
+            f"cmd={cmd_str[:300]}"
         )
 
     try:
