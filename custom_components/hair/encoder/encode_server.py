@@ -89,6 +89,12 @@ def serve_forever(native_dir: str, port: int = _ENCODE_SERVER_PORT):
                     self.send_error(500, "getTiming returned None")
                     return
 
+                # Strip trailing large gap value (100ms+ end-of-transmission
+                # marker from sendAc).  Keeping it causes the IR transmitter
+                # to fire multiple bursts instead of one.
+                while t and t[-1] > 50000:
+                    t.pop()
+
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
