@@ -124,22 +124,28 @@ jobs:
         run: echo "value=py$(echo '${{ matrix.python }}' | tr -d '.')" >> $GITHUB_OUTPUT
 
       - name: Build irhvac musl builder image (${{ matrix.platform }}, ${{ matrix.alpine }})
+        env:
+          ALPINE: ${{ matrix.alpine }}
         run: |
+          ALPINE_TAG="${ALPINE//:/-}"
           docker buildx build \
             --platform ${{ matrix.platform }} \
             --build-arg ALPINE_BASE=${{ matrix.alpine }} \
             -f build/docker/Dockerfile.irhvac.musl \
-            -t irhvac-builder-musl:${{ matrix.arch }}-${{ matrix.alpine }} \
+            -t "irhvac-builder-musl:${{ matrix.arch }}-${ALPINE_TAG}" \
             --load \
             .
 
       - name: Build _irhvac.so (musl)
+        env:
+          ALPINE: ${{ matrix.alpine }}
         run: |
+          ALPINE_TAG="${ALPINE//:/-}"
           docker run --rm \
             --platform ${{ matrix.platform }} \
             -e PYTHON_VERSION=${{ matrix.python }} \
             -v ${{ github.workspace }}:/workspace \
-            irhvac-builder-musl:${{ matrix.arch }}-${{ matrix.alpine }} \
+            "irhvac-builder-musl:${{ matrix.arch }}-${ALPINE_TAG}" \
             bash ./build/build_irhvac.sh ${{ matrix.script_arch }} ${{ matrix.out_dir }}
 
       - name: Upload musl native artifacts
