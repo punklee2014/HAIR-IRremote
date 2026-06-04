@@ -108,7 +108,7 @@ async def _call_worker(nd: str, request: dict[str, Any]) -> list[int]:
     loop = asyncio.get_running_loop()
 
     def _send_recv() -> list[int]:
-        nonlocal _worker_proc, _worker_nd
+        global _worker_proc, _worker_nd
 
         # Start or reset worker if needed.
         if _worker_proc is None or _worker_proc.poll() is not None or _worker_nd != nd:
