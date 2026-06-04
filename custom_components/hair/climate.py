@@ -104,7 +104,7 @@ class HAIRClimateEntity(ClimateEntity):
     def __init__(self, device: IRDevice, device_manager) -> None:
         self._device = device
         self._manager = device_manager
-        self._send_pending = False  # debounce flag
+        self._send_task: asyncio.Task | None = None
         self._attr_unique_id = f"hair_{device.id}_climate"
         self._attr_name = None
         self._hvac_mode = HVACMode.OFF
@@ -255,19 +255,24 @@ class HAIRClimateEntity(ClimateEntity):
     # ── debounced send for protocol AC ────────────────────────────────────
 
     def _notify(self) -> None:
-        """Mark the entity dirty — debounced send will follow."""
+        """Schedule a debounced send — cancels any previous pending send,
+        then waits 500ms for HA to finish batching its state changes,
+        then fires ONE IR burst."""
         if not self._is_protocol:
             return
-        if self._send_pending:
-            return
-        self._send_pending = True
-        self._manager._hass.async_create_task(self._debounced_send())
+        if self._send_task is not None and not self._send_task.done():
+            self._send_task.cancel()
+        self._send_task = self._manager._hass.async_create_task(
+            self._debounced_send()
+        )
 
     async def _debounced_send(self) -> None:
-        """Wait for HA to settle (200 ms), then fire one IR burst."""
-        await asyncio.sleep(0.2)
-        self._send_pending = False
-        await self._do_send()
+        """Sleep 500ms, then encode + transmit."""
+        try:
+            await asyncio.sleep(0.5)
+            await self._do_send()
+        except asyncio.CancelledError:
+            pass  # cancelled by a newer _notify call — correct behavior
 
     async def _do_send(self) -> None:
         """Encode and transmit the current device state as one IR frame."""
