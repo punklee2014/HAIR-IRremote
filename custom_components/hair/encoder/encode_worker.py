@@ -72,10 +72,22 @@ def main() -> int:
             ac.next.fanspeed = fans.get(str(fs).lower(), 0)
         sv = p.get("swingv")
         if sv is not None:
-            ac.next.swingv = int(sv)
+            # Use getattr — bare int 0 crashes C++ SWIG on musl.
+            ac.next.swingv = getattr(irhvac, "swingv_t_kAuto",
+                                     getattr(irhvac, "swingv_t_kOff", -1))
         sh = p.get("swingh")
         if sh is not None:
-            ac.next.swingh = int(sh)
+            ac.next.swingh = getattr(irhvac, "swingh_t_kAuto",
+                                     getattr(irhvac, "swingh_t_kOff", -1))
+
+    # Debug: print all values before the C++ call that may crash.
+    sv_val = getattr(ac.next, "swingv", None)
+    sh_val = getattr(ac.next, "swingh", None)
+    fs_val = getattr(ac.next, "fanspeed", None)
+    print(f"[WORKER] proto={proto_name}({ac.next.protocol}) model={ac.next.model} "
+          f"power={ac.next.power} mode={ac.next.mode} temp={ac.next.degrees} "
+          f"fan={fs_val} swingv={sv_val} swingh={sh_val}",
+          file=sys.stderr, flush=True)
 
     ac.sendAc()
     t = ac.getTiming()
