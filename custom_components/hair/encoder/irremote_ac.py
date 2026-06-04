@@ -6,7 +6,11 @@ positive = mark, negative = space (HA 2026.5+ / infrared-protocols v2.0+).
 """
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
+import sys
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -169,6 +173,17 @@ def _build_maps(irhvac: ModuleType) -> None:
 
 # ---- internal: encode -------------------------------------------------------
 
+def _native_dir() -> str:
+    """Return the path to the native dir that has irhvac.py + _irhvac.so."""
+    from .loader import _get_arch_dir, _native_candidates
+
+    arch = _get_arch_dir()
+    for p in _native_candidates(arch):
+        if (p / "irhvac.py").is_file() and (p / "_irhvac.so").is_file():
+            return str(p)
+    raise IRHVACUnavailableError("No native irhvac directory found")
+
+
 def encode(
     device: IRDevice,
     *,
@@ -179,6 +194,9 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
+    """Encode AC state via a child process (crash-safe for musl)."""
+    # Pre-load lightweight Python-side only (for protocol names / maps).
+    # Actual encoding runs in a subprocess → segfault won't kill HA.
     irhvac = _get_irhvac()
 
     protocol_name = (device.ir_protocol or "").upper()
@@ -188,42 +206,62 @@ def encode(
             f"Supported: {sorted(_PROTOCOL_MAP.keys())}"
         )
 
-    ac = irhvac.IRac(0)
-    ac.next.protocol = _PROTOCOL_MAP[protocol_name]
-    ac.next.model = device.ir_model or 1
+    nd = _native_dir()
+    script_path = str(Path(__file__).parent / "subprocess_encode.py")
 
-    if power:
-        ac.next.power = True
-        ac.next.mode = _MODE_MAP.get(hvac_mode, _MODE_MAP["auto"])
-        if temperature is not None:
-            ac.next.degrees = round(temperature)
-        if fan_mode and fan_mode in _FAN_MAP:
-            ac.next.fanspeed = _FAN_MAP[fan_mode]
-        if swing_mode:
-            if swing_mode in ("vertical", "on"):
-                ac.next.swingv = getattr(irhvac, "swingv_t_kAuto", 0)
-            elif swing_mode in ("horizontal",):
-                ac.next.swingh = getattr(irhvac, "swingh_t_kAuto", 0)
-            elif swing_mode in ("both",):
-                ac.next.swingv = getattr(irhvac, "swingv_t_kAuto", 0)
-                ac.next.swingh = getattr(irhvac, "swingh_t_kAuto", 0)
-    else:
-        ac.next.power = False
+    # Build command-line args.
+    cmd: list[str] = [
+        sys.executable, script_path, nd,
+        str(_PROTOCOL_MAP[protocol_name]),
+        str(device.ir_model or 1),
+        str(_MODE_MAP.get(hvac_mode, _MODE_MAP["auto"])),
+        str(round(temperature) if temperature is not None else 24),
+    ]
+    if not power:
+        cmd.append("--off")
+    if fan_mode and fan_mode in _FAN_MAP:
+        cmd += ["--fan", str(_FAN_MAP[fan_mode])]
+    if swing_mode:
+        irhvac = _get_irhvac()  # already have it, reuse
+        if swing_mode in ("vertical", "on"):
+            cmd += ["--swingv", str(getattr(irhvac, "swingv_t_kAuto", 0))]
+        elif swing_mode in ("horizontal",):
+            cmd += ["--swingh", str(getattr(irhvac, "swingh_t_kAuto", 0))]
+        elif swing_mode in ("both",):
+            cmd += [
+                "--swingv", str(getattr(irhvac, "swingv_t_kAuto", 0)),
+                "--swingh", str(getattr(irhvac, "swingh_t_kAuto", 0)),
+            ]
 
-    ac.sendAc()
+    _LOGGER.info("Subprocess AC encode: %s protocol=%s", " ".join(cmd[2:]), protocol_name)
 
-    raw = ac.getTiming()
-    if raw is None:
-        raise RuntimeError("IRac.getTiming() returned None")
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("AC encoder subprocess timed out (15 s)")
 
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()[:300]
+        raise RuntimeError(f"AC encoder subprocess exited {proc.returncode}: {stderr}")
+
+    # Parse JSON output.
+    try:
+        raw: list[int] = json.loads(proc.stdout.strip())
+    except json.JSONDecodeError:
+        raise RuntimeError(f"AC encoder returned bad JSON: {proc.stdout[:200]}")
+
+    # Convert all-positive [mark, space, ...] to signed [mark, -space, ...].
     signed: list[int] = []
     for i, val in enumerate(raw):
         if i % 2 == 0:
             signed.append(int(val))
         else:
             signed.append(-int(val))
-
-    ac.resetTiming()
 
     _LOGGER.debug("Encoded %s: %d timings", protocol_name, len(signed))
     return signed
