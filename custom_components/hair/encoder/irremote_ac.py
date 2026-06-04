@@ -155,19 +155,19 @@ def _encode_subprocess(native_dir: str, params: dict[str, Any]) -> list[int]:
     Reads JSON params from stdin, writes JSON timings to stdout.
     If the subprocess crashes the HA process is unaffected.
     """
-    clean_env = {
-        k: v for k, v in os.environ.items()
-        if k not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH")
-    }
+    # Minimal environment — only PATH.  Any variable inherited from
+    # HA's Docker runtime (even benign ones) can cause LD-/Python-
+    # path conflicts on musl.  Matching the proven manual test.
+    bare_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
 
     try:
         proc = subprocess.run(
-            ["python3", "-c", _ENCODE_INLINE, native_dir],
+            ["/usr/bin/python3", "-c", _ENCODE_INLINE, native_dir],
             input=json.dumps(params),
             capture_output=True,
             text=True,
             timeout=10,
-            env=clean_env,
+            env=bare_env,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("AC encoder subprocess timed out")
@@ -175,7 +175,13 @@ def _encode_subprocess(native_dir: str, params: dict[str, Any]) -> list[int]:
         raise RuntimeError("System python3 not found — is it installed?")
 
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()[:300]
+        err = (proc.stderr or proc.stdout or "").strip()[:500]
+        _LOGGER.error(
+            "Encoder subprocess exit=%s stderr=%s stdout=%s",
+            proc.returncode,
+            (proc.stderr or "").strip()[:300],
+            (proc.stdout or "").strip()[:200],
+        )
         raise RuntimeError(f"Encoder subprocess exited {proc.returncode}: {err}")
 
     try:
