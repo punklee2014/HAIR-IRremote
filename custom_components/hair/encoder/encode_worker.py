@@ -1,18 +1,15 @@
-"""Persistent worker for AC protocol encoding over stdin/stdout pipes.
+"""One-shot worker for AC protocol encoding.
 
-Mode 1 (pipe — used by HA via ``Popen``):
-    python3 encode_worker.py <native_dir> -
-    Reads JSON lines from stdin, writes JSON lists to stdout, loops forever.
+Called by HA via subprocess::
 
-Mode 2 (one-shot — for manual testing):
     python3 encode_worker.py <native_dir> '<json_params>'
-    Reads JSON from argv[2], writes JSON timings to stdout, exits.
+
+Writes JSON list[int] timings to stdout on success.  All irhvac lookups
+happen in this process — matched to the proven manual test.
 """
 import json
 import sys
 
-
-# ── shared encoder logic ────────────────────────────────────────────────────
 
 def _attrs(mod, prefix: str, strip_k: bool = False) -> dict[str, int]:
     m: dict[str, int] = {}
@@ -26,23 +23,42 @@ def _attrs(mod, prefix: str, strip_k: bool = False) -> dict[str, int]:
     return m
 
 
-def encode_one(native_dir: str, p: dict) -> list[int]:
-    sys.path.insert(0, native_dir)
-    import irhvac  # noqa: E402
+def main() -> int:
+    if len(sys.argv) < 3:
+        print("Usage: encode_worker.py <native_dir> <json_params>", file=sys.stderr)
+        return 2
 
+    native_dir = sys.argv[1]
+    sys.path.insert(0, native_dir)
+
+    try:
+        import irhvac  # noqa: E402
+    except ImportError as exc:
+        print(f"ERROR: cannot import irhvac: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        p = json.loads(sys.argv[2])
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: bad JSON: {exc}", file=sys.stderr)
+        return 1
+
+    # ---- protocol map --------------------------------------------------------
     protocols = {
         a.upper(): getattr(irhvac, a)
         for a in dir(irhvac)
         if a.isupper() and not a.startswith("_") and isinstance(getattr(irhvac, a), int)
     }
-
     proto_name = p.get("protocol", "COOLIX").upper()
     if proto_name not in protocols:
-        raise ValueError(f"Unknown protocol: {proto_name}")
+        print(f"ERROR: unknown protocol {proto_name}", file=sys.stderr)
+        return 1
 
+    # ---- mode / fan maps ----------------------------------------------------
     modes = _attrs(irhvac, "opmode_t_", strip_k=True)
     fans  = _attrs(irhvac, "fanspeed_t_", strip_k=True)
 
+    # ---- encode --------------------------------------------------------------
     ac = irhvac.IRac(0)
     ac.next.protocol = protocols[proto_name]
     ac.next.model    = int(p.get("model", 1))
@@ -64,7 +80,8 @@ def encode_one(native_dir: str, p: dict) -> list[int]:
     ac.sendAc()
     t = ac.getTiming()
     if t is None:
-        raise RuntimeError("getTiming() returned None")
+        print("ERROR: getTiming() returned None", file=sys.stderr)
+        return 1
 
     # Trim to a single frame.
     hdr = 0
@@ -77,42 +94,7 @@ def encode_one(native_dir: str, p: dict) -> list[int]:
     while t and t[-1] > 50000:
         t.pop()
 
-    return t
-
-
-# ── entry point ──────────────────────────────────────────────────────────────
-
-def main() -> int:
-    if len(sys.argv) < 2:
-        print("Usage: encode_worker.py <native_dir> [-] | <native_dir> <json>", file=sys.stderr)
-        return 2
-
-    native_dir = sys.argv[1]
-
-    if len(sys.argv) >= 3 and sys.argv[2] == "-":
-        # ── pipe mode: read JSON lines from stdin, loop forever ──
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                p = json.loads(line)
-                result = encode_one(native_dir, p)
-                print(json.dumps(result), flush=True)
-            except Exception as exc:
-                print(json.dumps({"error": str(exc)}), flush=True)
-
-    else:
-        # ── one-shot mode: JSON from argv[2] ──
-        params_str = sys.argv[2] if len(sys.argv) >= 3 else "{}"
-        try:
-            p = json.loads(params_str)
-            result = encode_one(native_dir, p)
-            print(json.dumps(result))
-        except Exception as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-
+    print(json.dumps(t))
     return 0
 
 

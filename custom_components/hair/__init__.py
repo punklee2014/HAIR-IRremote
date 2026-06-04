@@ -72,12 +72,7 @@ async def async_setup_entry(
     trigger_manager = TriggerManager(hass, store)
     signal_monitor = SignalMonitor(hass, signal_store, store, trigger_manager)
 
-    # Start the encode worker — forked ONCE at startup (avoids musl
-    # thread+fork SIGSEGV).  Communicates via stdin/stdout pipes.
-    from .encoder.irremote_ac import _start_worker
-
-    _start_worker(hass)
-
+    # Protocol encoder: one-shot subprocess (no in-process C loading).
     from .encoder.irremote_ac import probe_protocol_encoder
 
     protocol_ok, protocol_err = probe_protocol_encoder()
@@ -211,10 +206,6 @@ async def async_unload_entry(
         except Exception:
             _LOGGER.debug("Panel %s already removed", PANEL_URL)
         hass.data[DOMAIN].pop("_panel_registered", None)
-
-        from .encoder.irremote_ac import _stop_worker
-
-        _stop_worker()
 
     return True
 

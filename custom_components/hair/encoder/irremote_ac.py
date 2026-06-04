@@ -1,26 +1,22 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-A single ``python3`` child process is forked ONCE at HA startup (when
-the process is still single-threaded — avoids musl pthread+fork bugs).
-All subsequent encodes communicate with the child via stdin/stdout pipes.
+Each button press fires a one-shot ``python3`` subprocess running
+``encode_worker.py``.  Zero in-process C loading, zero daemon, zero
+pipe, zero server.
 """
 from __future__ import annotations
 
 import json
 import logging
 import platform
+import shutil
 import subprocess
-import sys
-import threading
 from pathlib import Path
 from typing import Any
 
 from ..models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
-
-_WORKER: subprocess.Popen | None = None
-_WORKER_LOCK = threading.Lock()
 
 
 class IRHVACUnavailableError(ImportError):
@@ -63,88 +59,71 @@ def _worker_path() -> str:
     return str(Path(__file__).parent / "encode_worker.py")
 
 
-# ── pipe-based persistent worker ─────────────────────────────────────────────
+# ---- find system python3 ONCE -------------------------------------------------
 
-def _start_worker(hass) -> None:
-    """Fork the encoder worker ONCE at startup (avoids musl thread+fork)."""
-    global _WORKER
-    if _WORKER is not None and _WORKER.poll() is None:
-        return
-
-    nd = _find_native_dir()
-    if nd is None:
-        _LOGGER.warning("Cannot start encode worker: no native dir")
-        return
-
-    try:
-        _WORKER = subprocess.Popen(
-            [sys.executable, "-u", _worker_path(), nd, "-"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except Exception as exc:
-        _LOGGER.warning("Failed to start encode worker: %s", exc)
-        _WORKER = None
-        return
-
-    _LOGGER.info("Encode worker started (pid %s)", _WORKER.pid)
+_SYS_PYTHON: str | None = None
 
 
-def _stop_worker() -> None:
-    global _WORKER
-    if _WORKER is not None:
-        try:
-            _WORKER.stdin.close()
-            _WORKER.wait(timeout=2)
-        except Exception:
-            _WORKER.kill()
-        _WORKER = None
+def _get_system_python() -> str:
+    """Return the system ``python3`` path (NOT HA's venv Python 3.14).
 
+    Tested working with musl .so — matches the manual test environment.
+    """
+    global _SYS_PYTHON
+    if _SYS_PYTHON is not None:
+        return _SYS_PYTHON
+    for candidate in ("python3", "/usr/bin/python3", "/usr/local/bin/python3"):
+        found = shutil.which(candidate)
+        if found and Path(found).is_file():
+            _SYS_PYTHON = found
+            _LOGGER.info("System python3 at %s", found)
+            return found
+    raise IRHVACUnavailableError(
+        "Cannot find system python3 — tried python3, /usr/bin/python3, "
+        "/usr/local/bin/python3"
+    )
+
+
+# ---- one-shot subprocess ----------------------------------------------------
 
 def _call_worker(params: dict[str, Any]) -> list[int]:
-    """Send a single encode request to the persistent worker via stdin.
+    """Call ``encode_worker.py <native_dir> '<json>'`` as a one-shot subprocess.
 
-    Thread-safe: serialised by _WORKER_LOCK.
+    No pipe, no daemon, no server — just ``subprocess.run`` with a file.
     """
-    global _WORKER
-    with _WORKER_LOCK:
-        if _WORKER is None or _WORKER.poll() is not None:
-            # Worker died — restart
-            _start_worker(None)
-            if _WORKER is None or _WORKER.poll() is not None:
-                raise IRHVACUnavailableError("Encode worker is not running")
+    args = [
+        _get_system_python(),
+        _worker_path(),
+        _find_native_dir(),
+        json.dumps(params),
+    ]
 
-        json_line = json.dumps(params) + "\n"
+    _LOGGER.debug("Encode subprocess: %s %s", args[0], args[1])
 
-        try:
-            _WORKER.stdin.write(json_line)
-            _WORKER.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
-            raise RuntimeError(f"Worker pipe broken: {exc}") from exc
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Encoder subprocess timed out")
 
-        try:
-            resp_line = _WORKER.stdout.readline()
-        except Exception as exc:
-            raise RuntimeError(f"Worker read error: {exc}") from exc
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()[:500]
+        _LOGGER.error(
+            "Encoder exit=%s stderr=%s stdout=%s",
+            proc.returncode,
+            (proc.stderr or "").strip()[:300],
+            (proc.stdout or "").strip()[:200],
+        )
+        raise RuntimeError(
+            f"Encoder subprocess exited {proc.returncode}: {err or 'no output'}"
+        )
 
-        if not resp_line:
-            # Worker exited — read stderr for error info
-            err = ""
-            try:
-                err = _WORKER.stderr.read()[:500]
-            except Exception:
-                pass
-            raise RuntimeError(f"Worker exited unexpectedly: {err.strip()}")
-
-        try:
-            return json.loads(resp_line.strip())
-        except json.JSONDecodeError:
-            raise RuntimeError(f"Worker returned bad JSON: {resp_line[:200]}")
+    try:
+        return json.loads(proc.stdout.strip())
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Encoder returned bad JSON: {proc.stdout[:200]}")
 
 
-# ── public API ───────────────────────────────────────────────────────────────
+# ---- public API -------------------------------------------------------------
 
 def probe_protocol_encoder() -> tuple[bool, str | None]:
     if _find_native_dir() is None:
@@ -176,10 +155,6 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    nd = _find_native_dir()
-    if nd is None:
-        raise IRHVACUnavailableError("No native irhvac directory")
-
     params: dict[str, Any] = {
         "protocol": (device.ir_protocol or "COOLIX").upper(),
         "model": device.ir_model or 1,
