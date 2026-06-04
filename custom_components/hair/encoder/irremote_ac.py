@@ -92,10 +92,10 @@ async def _call_worker(params: dict[str, Any]) -> list[int]:
     }
 
     cmd = [_get_system_python(), _worker_path(), nd, "--stdin"]
-    json_bytes = json.dumps(params).encode()
+    json_str = json.dumps(params)  # str, not bytes — text=True expects this
 
     def _run_system_cmd():
-        return subprocess.run(cmd, input=json_bytes, capture_output=True,
+        return subprocess.run(cmd, input=json_str, capture_output=True,
                               text=True, env=clean_env, timeout=5)
 
     loop = asyncio.get_running_loop()
