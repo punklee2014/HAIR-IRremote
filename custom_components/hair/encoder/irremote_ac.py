@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import platform
-import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -77,21 +76,9 @@ def _start_worker(hass) -> None:
         _LOGGER.warning("Cannot start encode worker: no native dir")
         return
 
-    # Find system python3 (NOT sys.executable — HA's Python 3.14 is
-    # incompatible with the musl-compiled .so).  Try common paths.
-    py_exe = None
-    for candidate in ("python3", "/usr/bin/python3", "/usr/local/bin/python3"):
-        found = shutil.which(candidate)
-        if found and os.path.isfile(found):
-            py_exe = found
-            break
-    if py_exe is None:
-        _LOGGER.error("Cannot find system python3 interpreter")
-        return
-
     try:
         _WORKER = subprocess.Popen(
-            [py_exe, "-u", _worker_path(), nd, "-"],
+            [sys.executable, "-u", _worker_path(), nd, "-"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
