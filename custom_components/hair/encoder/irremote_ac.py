@@ -1,17 +1,16 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-One-shot subprocess worker — each encode call spawns via /bin/sh -c
-for reliable native library loading, communicating via stdin/stdout JSON.
+Direct import — irhvac is loaded in-process on first encode call.
+No subprocess, no JSON serialization overhead.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import platform
-import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from ..models import IRDevice
@@ -64,91 +63,67 @@ def _find_native_dir() -> str | None:
     return None
 
 
-def _worker_path() -> str:
-    return str(Path(__file__).parent / "subprocess_encode.py")
+# ── lazy irhvac import & lookup tables ────────────────────────────────────────
+
+_IRHVAC: ModuleType | None = None
+_protocols: dict[str, int] = {}
+_mode_map: dict[str, int] = {}
+_mode_off: int = -1
+_fan_map: dict[str, int] = {}
+_swingv_auto: int = -1
+_swingh_auto: int = -1
+_load_attempted: bool = False
 
 
-# ── one-shot subprocess worker ────────────────────────────────────────────────
-
-_ENCODE_TIMEOUT = 10  # seconds
-_probe_result: bool | None = None  # module-level cache: True if .so loads
-
-
-def _check_native(nd: str) -> bool:
-    """Run probe once: can the native .so be loaded in a subprocess?
-
-    Caches result; returns True if probe exits 0.
-    """
-    global _probe_result
-    if _probe_result is not None:
-        return _probe_result
-
-    shell_cmd = f"cd {nd} && python3 {_worker_path()} --probe {nd}"
-    try:
-        proc = subprocess.run(
-            ["/bin/sh", "-c", shell_cmd],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except subprocess.TimeoutExpired:
-        _LOGGER.error("Native probe timed out")
-        _probe_result = False
-        return False
-
-    ok = proc.returncode == 0
-    stderr_tail = proc.stderr.strip()[-200:] if proc.stderr else ""
-    if ok:
-        _LOGGER.info("Native probe succeeded: %s", stderr_tail)
-    else:
-        _LOGGER.error(
-            "Native probe FAILED (exit=%s): %s", proc.returncode, stderr_tail
-        )
-    _probe_result = ok
-    return ok
+def _build_map(mod: ModuleType, prefix: str, strip_leading_k: bool = False) -> dict[str, int]:
+    m: dict[str, int] = {}
+    for attr in dir(mod):
+        if attr.startswith(prefix):
+            key = attr[len(prefix):]
+            if strip_leading_k and key.startswith("k"):
+                key = key[1:]
+            if key:
+                m[key.lower()] = getattr(mod, attr)
+    return m
 
 
-async def _call_worker(nd: str, request: dict[str, Any]) -> list[int]:
-    """Run a one-shot subprocess encode via /bin/sh -c (proven environment)."""
-    loop = asyncio.get_running_loop()
+def _ensure_loaded() -> ModuleType:
+    """Lazy-load irhvac on first call. Raises ImportError/RuntimeError on failure."""
+    global _IRHVAC, _protocols, _mode_map, _mode_off, _fan_map
+    global _swingv_auto, _swingh_auto, _load_attempted
 
-    def _run_oneshot() -> list[int]:
-        shell_cmd = f"cd {nd} && python3 {_worker_path()} --once {nd}"
-        try:
-            proc = subprocess.run(
-                ["/bin/sh", "-c", shell_cmd],
-                input=json.dumps(request),
-                capture_output=True,
-                text=True,
-                timeout=_ENCODE_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"Encoder timed out after {_ENCODE_TIMEOUT}s")
+    if _IRHVAC is not None:
+        return _IRHVAC
 
-        stderr_tail = proc.stderr[-500:] if proc.stderr else ""
-        if proc.returncode != 0:
-            _LOGGER.error("Encoder exit=%s stderr=%s", proc.returncode, stderr_tail)
-            raise RuntimeError(
-                f"Encoder failed (exit={proc.returncode}): {stderr_tail}"
-            )
+    nd = _find_native_dir()
+    if nd is None:
+        _load_attempted = True
+        raise ImportError("No native irhvac directory found — .so not installed")
 
-        try:
-            data = json.loads(proc.stdout.strip())
-        except json.JSONDecodeError:
-            raise RuntimeError(f"Encoder returned bad JSON: {proc.stdout[:200]}")
+    if nd not in sys.path:
+        sys.path.insert(0, nd)
 
-        if isinstance(data, dict) and "err" in data:
-            raise RuntimeError(f"Encoder error: {data['err']}")
+    import irhvac
 
-        if not isinstance(data, list):
-            raise RuntimeError(f"Encoder returned non-list: {proc.stdout[:200]}")
+    # Build lookup tables (once).
+    _protocols = {
+        a.upper(): getattr(irhvac, a)
+        for a in dir(irhvac)
+        if a.isupper() and not a.startswith("_") and isinstance(getattr(irhvac, a), int)
+    }
+    _mode_map = _build_map(irhvac, "opmode_t_", strip_leading_k=True)
+    _mode_off = getattr(irhvac, "opmode_t_kOff", -1)
+    _fan_map = _build_map(irhvac, "fanspeed_t_", strip_leading_k=True)
+    _swingv_auto = getattr(irhvac, "swingv_t_kAuto", getattr(irhvac, "swingv_t_kOff", -1))
+    _swingh_auto = getattr(irhvac, "swingh_t_kAuto", getattr(irhvac, "swingh_t_kOff", -1))
 
-        return data
-
-    return await loop.run_in_executor(None, _run_oneshot)
+    _IRHVAC = irhvac
+    _LOGGER.info("irhvac loaded in-process: %d protocols", len(_protocols))
+    return irhvac
 
 
-# ── public API ───────────────────────────────────────────────────────────────
+# ── public API ────────────────────────────────────────────────────────────────
+
 
 def probe_protocol_encoder() -> tuple[bool, str | None]:
     if _find_native_dir() is None:
@@ -180,29 +155,68 @@ async def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    nd = _find_native_dir()
-    if not _check_native(nd):
-        raise RuntimeError(
-            "Native encoder probe failed — irhvac .so may be incompatible "
-            "with this Python version. Check HA logs for probe details."
-        )
-    request: dict[str, Any] = {
-        "proto": (device.ir_protocol or "COOLIX").upper(),
-        "model": int(device.ir_model or 1),
-        "mode": str(hvac_mode).lower(),
-        "degrees": int(round(float(temperature if temperature is not None else 24))),
-        "power": power,
-    }
-    if fan_mode:
-        request["fan"] = str(fan_mode).lower()
-    if swing_mode and swing_mode != "off":
-        sw = str(swing_mode).lower()
-        if sw in ("vertical", "on", "both"):
-            request["swingv"] = "vertical"
-        if sw in ("horizontal", "both"):
-            request["swingh"] = "horizontal"
+    """Encode an AC command via direct irhvac call (in-process, no subprocess)."""
 
-    raw = await _call_worker(nd, request)
+    loop = asyncio.get_running_loop()
+
+    def _do_encode() -> list[int]:
+        irhvac = _ensure_loaded()
+
+        proto_name = (device.ir_protocol or "COOLIX").upper()
+        model = int(device.ir_model or 1)
+        mode_str = str(hvac_mode).lower()
+        degrees = int(round(float(temperature if temperature is not None else 24)))
+        fan_str = str(fan_mode).lower() if fan_mode else ""
+        swingv_str = str(swing_mode).lower() if swing_mode and swing_mode != "off" else ""
+        swingh_str = swingv_str if swingv_str else ""
+
+        if proto_name not in _protocols:
+            raise ValueError(f"Unknown protocol: {proto_name}")
+
+        mode_val = _mode_off
+        if power and mode_str != "off":
+            mode_val = _mode_map.get(mode_str, _mode_map.get("auto", 0))
+
+        ac = irhvac.IRac(0)
+        ac.next.protocol = _protocols[proto_name]
+        ac.next.model = model
+        ac.next.power = power
+        if power:
+            ac.next.mode = mode_val
+            ac.next.degrees = degrees
+            if fan_str and fan_str in _fan_map:
+                ac.next.fanspeed = _fan_map[fan_str]
+            if swingv_str:
+                ac.next.swingv = _swingv_auto
+            if swingh_str:
+                ac.next.swingh = _swingh_auto
+
+        _LOGGER.debug(
+            "Encoding: proto=%s model=%s power=%s mode=%s degrees=%s fan=%s sv=%s sh=%s",
+            proto_name, model, power, mode_val, degrees, fan_str, swingv_str, swingh_str,
+        )
+
+        ac.sendAc()
+        t = ac.getTiming()
+        if not t:
+            raise RuntimeError("getTiming() returned None/empty")
+
+        # Trim to single IR frame (same logic as subprocess_encode.py _trim_timing).
+        t = list(t)
+        if len(t) >= 4:
+            hdr = 0
+            for i in range(0, len(t), 2):
+                if t[i] > 2000:
+                    hdr += 1
+                    if hdr >= 2:
+                        t = t[:i]
+                        break
+        while t and t[-1] > 50000:
+            t.pop()
+
+        return t
+
+    raw = await loop.run_in_executor(None, _do_encode)
 
     signed: list[int] = []
     for i, val in enumerate(raw):
