@@ -1,16 +1,17 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
 Each button press fires a one-shot ``python3`` subprocess running
-``encode_worker.py``.  Zero in-process C loading, zero daemon, zero
-pipe, zero server.
+``encode_worker.py`` via ``asyncio.create_subprocess_exec`` — fully
+async, zero thread pool usage, zero in-process C loading.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import platform
 import shutil
-import subprocess
+import subprocess  # only for CalledProcessError
 from pathlib import Path
 from typing import Any
 
@@ -59,16 +60,12 @@ def _worker_path() -> str:
     return str(Path(__file__).parent / "encode_worker.py")
 
 
-# ---- find system python3 ONCE -------------------------------------------------
+# ── system python3 (cached) ──────────────────────────────────────────────────
 
 _SYS_PYTHON: str | None = None
 
 
 def _get_system_python() -> str:
-    """Return the system ``python3`` path (NOT HA's venv Python 3.14).
-
-    Tested working with musl .so — matches the manual test environment.
-    """
     global _SYS_PYTHON
     if _SYS_PYTHON is not None:
         return _SYS_PYTHON
@@ -84,46 +81,60 @@ def _get_system_python() -> str:
     )
 
 
-# ---- one-shot subprocess ----------------------------------------------------
+# ── async subprocess ─────────────────────────────────────────────────────────
 
-def _call_worker(params: dict[str, Any]) -> list[int]:
-    """Call ``encode_worker.py <native_dir> '<json>'`` as a one-shot subprocess.
+async def _call_worker(params: dict[str, Any]) -> list[int]:
+    """Call ``encode_worker.py`` via ``asyncio.create_subprocess_exec``.
 
-    No pipe, no daemon, no server — just ``subprocess.run`` with a file.
+    Fully async — no thread pool, no blocking I/O, microsecond-level
+    error detection on subprocess crash.
     """
-    args = [
-        _get_system_python(),
-        _worker_path(),
-        _find_native_dir(),
-        json.dumps(params),
-    ]
-
-    _LOGGER.debug("Encode subprocess: %s %s", args[0], args[1])
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _get_system_python(),
+            _worker_path(),
+            _find_native_dir(),
+            json.dumps(params),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        raise IRHVACUnavailableError("System python3 not found")
 
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=10)
-    except subprocess.TimeoutExpired:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=10,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
         raise RuntimeError("Encoder subprocess timed out")
 
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()[:500]
+    returncode = proc.returncode
+    stderr = (stderr_bytes or b"").decode(errors="replace")
+    stdout = (stdout_bytes or b"").decode(errors="replace")
+
+    # Log any debug output from the worker (stderr).
+    if stderr.strip():
+        _LOGGER.debug("Worker stderr: %s", stderr.strip()[:500])
+
+    if returncode != 0:
         _LOGGER.error(
             "Encoder exit=%s stderr=%s stdout=%s",
-            proc.returncode,
-            (proc.stderr or "").strip()[:300],
-            (proc.stdout or "").strip()[:200],
+            returncode, stderr.strip()[:300], stdout.strip()[:200],
         )
         raise RuntimeError(
-            f"Encoder subprocess exited {proc.returncode}: {err or 'no output'}"
+            f"Encoder subprocess exited {returncode}: "
+            f"{(stderr or stdout or 'no output').strip()[:500]}"
         )
 
     try:
-        return json.loads(proc.stdout.strip())
+        return json.loads(stdout.strip())
     except json.JSONDecodeError:
-        raise RuntimeError(f"Encoder returned bad JSON: {proc.stdout[:200]}")
+        raise RuntimeError(f"Encoder returned bad JSON: {stdout[:200]}")
 
 
-# ---- public API -------------------------------------------------------------
+# ── public API ───────────────────────────────────────────────────────────────
 
 def probe_protocol_encoder() -> tuple[bool, str | None]:
     if _find_native_dir() is None:
@@ -145,7 +156,7 @@ def get_supported_protocols() -> list[str]:
     return sorted(PROTOCOL_MODELS.keys())
 
 
-def encode(
+async def encode(
     device: IRDevice,
     *,
     power: bool = True,
@@ -171,7 +182,7 @@ def encode(
             if swing_mode in ("horizontal", "both"):
                 params["swingh"] = 0
 
-    raw = _call_worker(params)
+    raw = await _call_worker(params)
 
     signed: list[int] = []
     for i, val in enumerate(raw):

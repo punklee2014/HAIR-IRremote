@@ -276,8 +276,6 @@ class HAIRClimateEntity(ClimateEntity):
 
     async def _do_send(self) -> None:
         """Encode and transmit the current device state as one IR frame."""
-        from functools import partial
-
         from .encoder.irremote_ac import encode as ac_encode
 
         power = self._hvac_mode != HVACMode.OFF
@@ -291,18 +289,16 @@ class HAIRClimateEntity(ClimateEntity):
             power, mode, self._target_temperature, self._fan_mode, self._swing_mode,
         )
 
-        encode_fn = partial(
-            ac_encode,
-            self._device,
-            power=power,
-            hvac_mode=mode,
-            temperature=self._target_temperature,
-            fan_mode=self._fan_mode,
-            swing_mode=self._swing_mode,
-        )
-
         try:
-            timings = await self._manager._hass.async_add_executor_job(encode_fn)
+            # Fully async — asyncio.create_subprocess_exec, no thread pool.
+            timings = await ac_encode(
+                self._device,
+                power=power,
+                hvac_mode=mode,
+                temperature=self._target_temperature,
+                fan_mode=self._fan_mode,
+                swing_mode=self._swing_mode,
+            )
         except Exception as err:
             _LOGGER.exception("Protocol encoder failed")
             raise RuntimeError(f"Protocol encoder failed: {err}") from err
