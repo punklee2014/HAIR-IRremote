@@ -69,6 +69,11 @@ def serve_forever(native_dir: str, port: int = _ENCODE_SERVER_PORT):
             try:
                 ac = irhvac.IRac(0)
                 proto_name = params.get("protocol", "COOLIX").upper()
+                print(f"[encode] protocol={proto_name} model={params.get('model')} "
+                      f"power={params.get('power')} mode={params.get('mode')} "
+                      f"degrees={params.get('degrees')} fan={params.get('fanspeed')} "
+                      f"swingv={params.get('swingv')} swingh={params.get('swingh')}",
+                      flush=True)
                 ac.next.protocol = PROTO.get(proto_name, 15)
                 ac.next.model = params.get("model", 1)
                 ac.next.power = bool(params.get("power", True))

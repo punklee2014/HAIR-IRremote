@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from homeassistant.components.climate import (
@@ -101,14 +102,15 @@ class HAIRClimateEntity(ClimateEntity):
     _enable_turn_on_off_backwards_compatibility = False
 
     def __init__(self, device: IRDevice, device_manager) -> None:
+        self._last_send = 0.0  # cooldown
         self._device = device
         self._manager = device_manager
         self._attr_unique_id = f"hair_{device.id}_climate"
         self._attr_name = None
         self._hvac_mode = HVACMode.OFF
-        self._target_temperature: float | None = None
-        self._fan_mode: str | None = None
-        self._swing_mode: str | None = None
+        self._target_temperature: float | None = 24  # default for protocol AC
+        self._fan_mode: str | None = "auto"
+        self._swing_mode: str | None = "off"
         _LOGGER.info(
             "HAIRClimateEntity created: device=%s ac_control_mode=%s ir_protocol=%s is_protocol=%s",
             device.name,
@@ -259,6 +261,15 @@ class HAIRClimateEntity(ClimateEntity):
         fan_mode: str | None = None,
         swing_mode: str | None = None,
     ) -> None:
+        # Cooldown: skip if another send happened in the last 800ms.
+        # HA fires set_hvac_mode + turn_on simultaneously; cooldown
+        # ensures only one IR burst per user action.
+        now = time.monotonic()
+        if now - self._last_send < 0.8:
+            _LOGGER.debug("Skipping duplicate send (cooldown active)")
+            return
+        self._last_send = now
+
         mode = hvac_mode or self._hvac_mode or HVACMode.AUTO
         if isinstance(mode, HVACMode):
             mode = mode.value
@@ -317,7 +328,14 @@ class HAIRClimateEntity(ClimateEntity):
                 await self._send_protocol(power=False)
                 self._hvac_mode = HVACMode.OFF
             else:
-                await self._send_protocol(power=True, hvac_mode=hvac_mode.value)
+                # Always include current temperature so the AC gets a
+                # complete state frame (mode + temp + fan + swing).
+                await self._send_protocol(
+                    power=True,
+                    hvac_mode=hvac_mode.value,
+                    temperature=self._target_temperature,
+                    fan_mode=self._fan_mode,
+                )
                 self._hvac_mode = hvac_mode
             self.async_write_ha_state()
             return
@@ -349,7 +367,13 @@ class HAIRClimateEntity(ClimateEntity):
 
         if self._is_protocol:
             self._target_temperature = float(target)
-            await self._send_protocol(temperature=self._target_temperature)
+            # Send complete state frame with new temperature.
+            await self._send_protocol(
+                power=True,
+                temperature=self._target_temperature,
+                hvac_mode=self._hvac_mode.value if isinstance(self._hvac_mode, HVACMode) else self._hvac_mode,
+                fan_mode=self._fan_mode,
+            )
             self.async_write_ha_state()
             return
 
@@ -370,7 +394,13 @@ class HAIRClimateEntity(ClimateEntity):
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         if self._is_protocol:
             self._fan_mode = fan_mode
-            await self._send_protocol(fan_mode=fan_mode)
+            # Send complete state frame with new fan speed.
+            await self._send_protocol(
+                power=True,
+                fan_mode=fan_mode,
+                hvac_mode=self._hvac_mode.value if isinstance(self._hvac_mode, HVACMode) else self._hvac_mode,
+                temperature=self._target_temperature,
+            )
             self.async_write_ha_state()
             return
 
@@ -387,7 +417,14 @@ class HAIRClimateEntity(ClimateEntity):
     async def async_set_swing_mode(self, swing_mode: str) -> None:
         if self._is_protocol:
             self._swing_mode = swing_mode
-            await self._send_protocol(swing_mode=swing_mode)
+            # Send complete state frame with new swing.
+            await self._send_protocol(
+                power=True,
+                swing_mode=swing_mode,
+                hvac_mode=self._hvac_mode.value if isinstance(self._hvac_mode, HVACMode) else self._hvac_mode,
+                temperature=self._target_temperature,
+                fan_mode=self._fan_mode,
+            )
             self.async_write_ha_state()
             return
 
@@ -411,9 +448,17 @@ class HAIRClimateEntity(ClimateEntity):
 
     async def async_turn_on(self) -> None:
         if self._is_protocol:
-            await self._send_protocol(power=True)
             if self._hvac_mode == HVACMode.OFF:
                 self._hvac_mode = HVACMode.AUTO
+                self._target_temperature = self._target_temperature or 24
+            # Send complete state frame (mode + temp + fan + swing).
+            await self._send_protocol(
+                power=True,
+                hvac_mode=self._hvac_mode.value if isinstance(self._hvac_mode, HVACMode) else self._hvac_mode,
+                temperature=self._target_temperature,
+                fan_mode=self._fan_mode,
+                swing_mode=self._swing_mode,
+            )
             self.async_write_ha_state()
             return
 
