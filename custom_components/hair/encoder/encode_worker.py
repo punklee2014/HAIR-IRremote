@@ -66,7 +66,7 @@ def main() -> int:
 
     if ac.next.power:
         ac.next.mode     = modes.get(str(p.get("mode", "auto")).lower(), 0)
-        ac.next.degrees  = float(p.get("degrees", 24))
+        ac.next.degrees  = int(round(float(p.get("degrees", 24))))
         fs = p.get("fanspeed")
         if fs:
             ac.next.fanspeed = fans.get(str(fs).lower(), 0)
@@ -91,9 +91,13 @@ def main() -> int:
 
     ac.sendAc()
     t = ac.getTiming()
-    if t is None:
-        print("ERROR: getTiming() returned None", file=sys.stderr)
+    if not t:
+        print("ERROR: getTiming() returned None or empty list", file=sys.stderr)
         return 1
+    if len(t) < 4:
+        # Too short to be a valid frame — return as-is (probably off signal).
+        print(json.dumps(t))
+        return 0
 
     # Trim to a single frame.
     hdr = 0
