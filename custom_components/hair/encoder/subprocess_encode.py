@@ -26,16 +26,16 @@ def _build_map(mod, prefix: str, strip_leading_k: bool = False) -> dict[str, int
 
 
 def main() -> None:
-    if len(sys.argv) < 3 or sys.argv[2] != "--stdin":
-        print("Usage: subprocess_encode.py <native_dir> --stdin  < params.json",
+    if len(sys.argv) < 3:
+        print("Usage: subprocess_encode.py <native_dir> <params.json>",
               file=sys.stderr)
         sys.exit(2)
 
     native_dir = Path(sys.argv[1])
+    params_file = sys.argv[2]
 
-    # Read all protocol parameters from stdin (flexible JSON).
     try:
-        params = json.loads(sys.stdin.read())
+        params = json.loads(open(params_file).read())
     except json.JSONDecodeError as exc:
         print(f"ERROR: bad JSON from stdin: {exc}", file=sys.stderr)
         sys.exit(1)

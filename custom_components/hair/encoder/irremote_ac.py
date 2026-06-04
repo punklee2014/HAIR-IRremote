@@ -87,22 +87,31 @@ async def _call_worker(params: dict[str, Any]) -> list[int]:
     clean_env = {
         "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "HOME": os.environ.get("HOME", "/tmp"),
-        "PYTHONPATH": nd,
-        "LD_LIBRARY_PATH": nd,
     }
 
-    cmd = [_get_system_python(), _worker_path(), nd, "--stdin"]
-    json_str = json.dumps(params)  # str, not bytes — text=True expects this
+    # Write params to a temp file — avoids stdin pipe which behaves
+    # differently in Python 3.14's subprocess.  Worker reads from file.
+    import tempfile
+    fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="hair_params_")
+    with os.fdopen(fd, "w") as fh:
+        json.dump(params, fh)
+
+    cmd = [_get_system_python(), _worker_path(), nd, tmp_path]
 
     def _run_system_cmd():
-        return subprocess.run(cmd, input=json_str, capture_output=True,
+        return subprocess.run(cmd, capture_output=True,
                               text=True, env=clean_env, timeout=5)
 
-    loop = asyncio.get_running_loop()
     try:
+        loop = asyncio.get_running_loop()
         res = await loop.run_in_executor(None, _run_system_cmd)
     except subprocess.TimeoutExpired:
         raise RuntimeError("Encoder subprocess timed out")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "").strip()[:500]
