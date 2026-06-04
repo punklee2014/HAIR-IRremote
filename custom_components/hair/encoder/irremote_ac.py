@@ -89,15 +89,7 @@ async def _call_worker(params: dict[str, Any]) -> list[int]:
     Fully async — no thread pool, no blocking I/O, microsecond-level
     error detection on subprocess crash.
     """
-    # Minimal env — only HOME and PATH.  Anything inherited from HA's
-    # polluted Docker env can leak paths that confuse musl ld on load.
-    import os
-    bare_env: dict[str, str] = {}
-    for key in ("HOME", "PATH"):
-        val = os.environ.get(key)
-        if val:
-            bare_env[key] = val
-
+    # Inherit full HA environment — musl ld needs system paths.
     try:
         proc = await asyncio.create_subprocess_exec(
             _get_system_python(),
@@ -106,7 +98,6 @@ async def _call_worker(params: dict[str, Any]) -> list[int]:
             json.dumps(params),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=bare_env,
         )
     except FileNotFoundError:
         raise IRHVACUnavailableError("System python3 not found")

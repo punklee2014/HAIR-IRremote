@@ -65,14 +65,16 @@ def main() -> int:
     ac.next.power    = bool(p.get("power", True))
 
     if ac.next.power:
-        ac.next.mode     = modes.get(str(p.get("mode", "auto")).lower(), 0)
-        ac.next.degrees  = int(round(float(p.get("degrees", 24))))
+        mode_str = str(p.get("mode", "auto")).lower()
+        ac.next.mode = modes.get(mode_str,
+                                 getattr(irhvac, "opmode_t_kAuto", 0))
+        ac.next.degrees = int(round(float(p.get("degrees", 24))))
         fs = p.get("fanspeed")
         if fs:
-            ac.next.fanspeed = fans.get(str(fs).lower(), 0)
+            ac.next.fanspeed = fans.get(str(fs).lower(),
+                                        getattr(irhvac, "fanspeed_t_kAuto", 0))
         sv = p.get("swingv")
         if sv is not None:
-            # Use getattr — bare int 0 crashes C++ SWIG on musl.
             ac.next.swingv = getattr(irhvac, "swingv_t_kAuto",
                                      getattr(irhvac, "swingv_t_kOff", -1))
         sh = p.get("swingh")
@@ -80,16 +82,18 @@ def main() -> int:
             ac.next.swingh = getattr(irhvac, "swingh_t_kAuto",
                                      getattr(irhvac, "swingh_t_kOff", -1))
 
-    # Debug: print all values before the C++ call that may crash.
-    sv_val = getattr(ac.next, "swingv", None)
-    sh_val = getattr(ac.next, "swingh", None)
-    fs_val = getattr(ac.next, "fanspeed", None)
     print(f"[WORKER] proto={proto_name}({ac.next.protocol}) model={ac.next.model} "
           f"power={ac.next.power} mode={ac.next.mode} temp={ac.next.degrees} "
-          f"fan={fs_val} swingv={sv_val} swingh={sh_val}",
+          f"fan={getattr(ac.next, 'fanspeed', 'N/A')} "
+          f"swingv={getattr(ac.next, 'swingv', 'N/A')} "
+          f"swingh={getattr(ac.next, 'swingh', 'N/A')}",
           file=sys.stderr, flush=True)
 
-    ac.sendAc()
+    try:
+        ac.sendAc()
+    except Exception as exc:
+        print(f"ERROR inside sendAc(): {exc}", file=sys.stderr, flush=True)
+        return 1
     t = ac.getTiming()
     if not t:
         print("ERROR: getTiming() returned None or empty list", file=sys.stderr)
