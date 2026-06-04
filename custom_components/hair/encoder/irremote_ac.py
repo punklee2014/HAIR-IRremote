@@ -1,8 +1,7 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-Each button press calls ``subprocess_encode.py`` with pure positional
-string argv — no JSON, no stdin pipe, no temp files.  Exactly matches
-the proven command-line test.
+Pure positional string argv — no JSON, no stdin pipe, no shell interpolation.
+Optimized for high-performance sandboxing under Python 3.14 + musl-libc.
 """
 from __future__ import annotations
 
@@ -71,24 +70,26 @@ def _get_system_python() -> str:
         found = shutil.which(candidate)
         if found and Path(found).is_file():
             _SYS_PYTHON = found
-            _LOGGER.info("System python3 at %s", found)
             return found
     raise IRHVACUnavailableError("Cannot find system python3")
 
 
 async def _call_worker(nd: str, args: list[str]) -> list[int]:
-    """Run ``subprocess_encode.py`` with pure positional string args.
+    """通过真正的非 Shell 干净列表拉起子进程，绝不产生错位"""
+    
+    # 彻底洗净父进程继承下来的复杂共享库路径与信号劫持
+    clean_env = {
+        "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/tmp",
+        "PYTHONPATH": nd,
+        "LD_LIBRARY_PATH": nd,
+    }
 
-    Command: python3 subprocess_encode.py <nd> <proto> <model> <mode> <degrees> [flags]
-    """
-    # Reproduce the proven manual test EXACTLY:
-    #   cd <nd> && python3 <worker> <nd> <args>
-    # /bin/sh resolves python3 from its own PATH — identical to SSH shell.
-    shell_cmd = f"cd {nd} && python3 {_worker_path()} {nd} {' '.join(args)}"
+    # 形成最纯粹的数组级传递：sys.argv[1] = nd, sys.argv[2] = proto ...
+    cmd = [_get_system_python(), _worker_path(), nd] + args
 
     def _run():
-        return subprocess.run(["/bin/sh", "-c", shell_cmd],
-                              capture_output=True, text=True, timeout=5)
+        return subprocess.run(cmd, capture_output=True, text=True, env=clean_env, timeout=5)
 
     loop = asyncio.get_running_loop()
     try:
@@ -97,9 +98,10 @@ async def _call_worker(nd: str, args: list[str]) -> list[int]:
         raise RuntimeError("Encoder subprocess timed out")
 
     if res.returncode != 0:
-        err = (res.stderr or res.stdout or "").strip()[:500]
+        err_msg = (res.stderr or "").strip() or (res.stdout or "").strip()
+        _LOGGER.error("Subprocess crashed! exit=%s, details=%s", res.returncode, err_msg)
         raise RuntimeError(
-            f"Encoder subprocess exited {res.returncode}: {err or 'no output'}"
+            f"Encoder subprocess exited {res.returncode}: {err_msg[:300] or 'no output'}"
         )
 
     try:
@@ -144,9 +146,11 @@ async def encode(
     proto = (device.ir_protocol or "COOLIX").upper()
     model = str(device.ir_model or 1)
     mode = str(hvac_mode).lower()
-    temp = str(round(temperature) if temperature is not None else 24)
+    
+    # 【最强防线】：在序列化前，彻底把 float 锤成纯净的纯整数文本（拒绝产生 "24.0"）
+    temp = str(int(round(float(temperature if temperature is not None else 24))))
 
-    # Pure positional argv — no JSON, no files, no pipes.
+    # 严格按照位置组装 args
     args = [proto, model, mode, temp]
     if not power:
         args.append("--off")

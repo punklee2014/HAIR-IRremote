@@ -34,7 +34,7 @@ def main() -> None:
         )
         sys.exit(2)
 
-    # Purge stale module cache inherited from parent processes.
+    # 【核心防御 1】：清除所有可能因父进程克隆/环境变量残留继承下来的模块垃圾
     sys.modules.pop("irhvac", None)
     sys.modules.pop("_irhvac", None)
 
@@ -42,6 +42,9 @@ def main() -> None:
     protocol_name = sys.argv[2].upper()
     model = int(sys.argv[3])
     mode_str = sys.argv[4].lower()
+
+    # 【核心防御 2】：强制进行纯 integer 类型剥离，绝不让底层 C++ 隐式转换嗅到一丝 float 的气味
+    # 防止高版本 Python 3.14 的 float 代理对象在 musl-libc 下引发内存寻址不对齐
     degrees = int(round(float(sys.argv[5])))
 
     # Parse flags.
@@ -141,6 +144,7 @@ def main() -> None:
     while t and t[-1] > 50000:
         t.pop()
 
+    # 成功时，标准输出（stdout）只有纯正的 JSON 数组
     print(json.dumps(t))
 
 
