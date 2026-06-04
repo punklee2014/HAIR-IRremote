@@ -1,8 +1,8 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-Each encode runs as a one-shot ``python3`` subprocess — reads JSON params
-from stdin, imports ``irhvac``, encodes, prints JSON timings to stdout.
-Zero in-process C loading, zero daemon, zero port.
+A single ``python3`` child process is forked ONCE at HA startup (when
+the process is still single-threaded — avoids musl pthread+fork bugs).
+All subsequent encodes communicate with the child via stdin/stdout pipes.
 """
 from __future__ import annotations
 
@@ -11,12 +11,16 @@ import logging
 import os
 import platform
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
 from ..models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
+
+_WORKER: subprocess.Popen | None = None
+_WORKER_LOCK = threading.Lock()
 
 
 class IRHVACUnavailableError(ImportError):
@@ -55,6 +59,98 @@ def _find_native_dir() -> str | None:
     return None
 
 
+def _worker_path() -> str:
+    return str(Path(__file__).parent / "encode_worker.py")
+
+
+# ── pipe-based persistent worker ─────────────────────────────────────────────
+
+def _start_worker(hass) -> None:
+    """Fork the encoder worker ONCE at startup (avoids musl thread+fork).
+
+    The worker reads one JSON line from stdin, writes one JSON line to
+    stdout, then exits.  We keep stdin/stdout open for the lifetime of
+    the HA process.
+    """
+    global _WORKER
+    if _WORKER is not None and _WORKER.poll() is None:
+        return
+
+    nd = _find_native_dir()
+    if nd is None:
+        _LOGGER.warning("Cannot start encode worker: no native dir")
+        return
+
+    try:
+        _WORKER = subprocess.Popen(
+            ["/usr/bin/python3", "-u", _worker_path(), nd, "-"],  # "-" = stdin mode
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except Exception as exc:
+        _LOGGER.warning("Failed to start encode worker: %s", exc)
+        _WORKER = None
+        return
+
+    _LOGGER.info("Encode worker started (pid %s)", _WORKER.pid)
+
+
+def _stop_worker() -> None:
+    global _WORKER
+    if _WORKER is not None:
+        try:
+            _WORKER.stdin.close()
+            _WORKER.wait(timeout=2)
+        except Exception:
+            _WORKER.kill()
+        _WORKER = None
+
+
+def _call_worker(params: dict[str, Any]) -> list[int]:
+    """Send a single encode request to the persistent worker via stdin.
+
+    Thread-safe: serialised by _WORKER_LOCK.
+    """
+    global _WORKER
+    with _WORKER_LOCK:
+        if _WORKER is None or _WORKER.poll() is not None:
+            # Worker died — restart
+            _start_worker(None)
+            if _WORKER is None or _WORKER.poll() is not None:
+                raise IRHVACUnavailableError("Encode worker is not running")
+
+        json_line = json.dumps(params) + "\n"
+
+        try:
+            _WORKER.stdin.write(json_line)
+            _WORKER.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise RuntimeError(f"Worker pipe broken: {exc}") from exc
+
+        try:
+            resp_line = _WORKER.stdout.readline()
+        except Exception as exc:
+            raise RuntimeError(f"Worker read error: {exc}") from exc
+
+        if not resp_line:
+            # Worker exited — read stderr for error info
+            err = ""
+            try:
+                err = _WORKER.stderr.read()[:500]
+            except Exception:
+                pass
+            raise RuntimeError(f"Worker exited unexpectedly: {err.strip()}")
+
+        try:
+            return json.loads(resp_line.strip())
+        except json.JSONDecodeError:
+            raise RuntimeError(f"Worker returned bad JSON: {resp_line[:200]}")
+
+
+# ── public API ───────────────────────────────────────────────────────────────
+
 def probe_protocol_encoder() -> tuple[bool, str | None]:
     if _find_native_dir() is None:
         return False, "No native irhvac directory"
@@ -75,123 +171,6 @@ def get_supported_protocols() -> list[str]:
     return sorted(PROTOCOL_MODELS.keys())
 
 
-# ── one-shot subprocess encoder ──────────────────────────────────────────────
-
-# Inline Python 3 script that reads JSON params from stdin, imports irhvac,
-# calls sendAc(), and prints JSON timings to stdout.  This script is passed
-# as ``-c`` to ``python3`` (the system interpreter), never run in the HA
-# process.
-_ENCODE_INLINE = r"""
-import json, sys
-native_dir = sys.argv[1]
-sys.path.insert(0, native_dir)
-import irhvac
-
-p = json.loads(sys.stdin.read())
-
-def _attrs(prefix, strip_k=False):
-    m = {}
-    for a in dir(irhvac):
-        if a.startswith(prefix):
-            k = a[len(prefix):]
-            if strip_k and k.startswith("k"):
-                k = k[1:]
-            if k:
-                m[k.lower()] = getattr(irhvac, a)
-    return m
-
-# protocol: uses decode_type_t constants (all UPPER + not starting with _)
-protocols = {
-    a.upper(): getattr(irhvac, a)
-    for a in dir(irhvac)
-    if a.isupper() and not a.startswith("_") and isinstance(getattr(irhvac, a), int)
-}
-proto_name = p.get("protocol", "COOLIX").upper()
-if proto_name not in protocols:
-    print(f"ERROR: unknown protocol {proto_name}", file=sys.stderr); sys.exit(1)
-
-modes = _attrs("opmode_t_", strip_k=True)
-fans  = _attrs("fanspeed_t_", strip_k=True)
-
-ac = irhvac.IRac(0)
-ac.next.protocol = protocols[proto_name]
-ac.next.model       = int(p.get("model", 1))
-ac.next.power       = bool(p.get("power", True))
-if ac.next.power:
-    ac.next.mode    = modes.get(p.get("mode", "auto"), 0)
-    ac.next.degrees  = float(p.get("degrees", 24))
-    fs = p.get("fanspeed")
-    if fs:
-        ac.next.fanspeed = fans.get(str(fs).lower(), 0)
-    sv = p.get("swingv")
-    if sv is not None:
-        ac.next.swingv = int(sv)
-    sh = p.get("swingh")
-    if sh is not None:
-        ac.next.swingh = int(sh)
-
-ac.sendAc()
-t = ac.getTiming()
-if t is None:
-    print("ERROR: getTiming returned None", file=sys.stderr); sys.exit(1)
-
-# truncate to one frame
-hdr = 0
-for i in range(0, len(t), 2):
-    if t[i] > 2000:
-        hdr += 1
-        if hdr >= 2:
-            t = t[:i]; break
-while t and t[-1] > 50000:
-    t.pop()
-
-print(json.dumps(t))
-"""
-
-
-def _encode_subprocess(native_dir: str, params: dict[str, Any]) -> list[int]:
-    """Run the inline encoder via system ``python3``.
-
-    Reads JSON params from stdin, writes JSON timings to stdout.
-    If the subprocess crashes the HA process is unaffected.
-    """
-    # Minimal environment — only PATH.  Any variable inherited from
-    # HA's Docker runtime (even benign ones) can cause LD-/Python-
-    # path conflicts on musl.  Matching the proven manual test.
-    bare_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-
-    try:
-        proc = subprocess.run(
-            ["/usr/bin/python3", "-c", _ENCODE_INLINE, native_dir],
-            input=json.dumps(params),
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=bare_env,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("AC encoder subprocess timed out")
-    except FileNotFoundError:
-        raise RuntimeError("System python3 not found — is it installed?")
-
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()[:500]
-        _LOGGER.error(
-            "Encoder subprocess exit=%s stderr=%s stdout=%s",
-            proc.returncode,
-            (proc.stderr or "").strip()[:300],
-            (proc.stdout or "").strip()[:200],
-        )
-        raise RuntimeError(f"Encoder subprocess exited {proc.returncode}: {err}")
-
-    try:
-        return json.loads(proc.stdout.strip())
-    except json.JSONDecodeError:
-        raise RuntimeError(f"Encoder returned bad JSON: {proc.stdout[:200]}")
-
-
-# ── public encode ────────────────────────────────────────────────────────────
-
 def encode(
     device: IRDevice,
     *,
@@ -202,11 +181,6 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    """Encode AC state via a stateless ``python3`` subprocess.
-
-    The subprocess imports ``irhvac`` and does ALL protocol/mode/fan
-    lookups.  No native code ever runs inside HA.
-    """
     nd = _find_native_dir()
     if nd is None:
         raise IRHVACUnavailableError("No native irhvac directory")
@@ -227,9 +201,7 @@ def encode(
             if swing_mode in ("horizontal", "both"):
                 params["swingh"] = 0
 
-    _LOGGER.debug("Subprocess encode: %s", params)
-
-    raw = _encode_subprocess(nd, params)
+    raw = _call_worker(params)
 
     signed: list[int] = []
     for i, val in enumerate(raw):
