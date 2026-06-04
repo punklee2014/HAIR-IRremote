@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import platform
 import shutil
-import subprocess  # only for CalledProcessError
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -84,55 +85,58 @@ def _get_system_python() -> str:
 # ── async subprocess ─────────────────────────────────────────────────────────
 
 async def _call_worker(params: dict[str, Any]) -> list[int]:
-    """Call ``encode_worker.py`` via ``asyncio.create_subprocess_exec``.
+    """Call ``encode_worker.py`` via ``loop.run_in_executor`` + ``subprocess.run``.
 
-    Fully async — no thread pool, no blocking I/O, microsecond-level
-    error detection on subprocess crash.
+    Uses a clean, minimal environment (matching the proven command-line
+    test) and dispatches through a raw OS thread to avoid any asyncio
+    signal interference on musl.
     """
-    # Inherit full HA environment — musl ld needs system paths.
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            _get_system_python(),
-            _worker_path(),
-            _find_native_dir(),
-            json.dumps(params),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError:
-        raise IRHVACUnavailableError("System python3 not found")
+    nd = _find_native_dir()
+    clean_env = {
+        "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "PYTHONPATH": nd,
+        "LD_LIBRARY_PATH": nd,
+    }
 
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=10,
+    args = [
+        _get_system_python(),
+        _worker_path(),
+        nd,
+        json.dumps(params),
+    ]
+
+    def _run_system_cmd():
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            env=clean_env,
+            timeout=5,
         )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+
+    loop = asyncio.get_running_loop()
+    try:
+        res = await loop.run_in_executor(None, _run_system_cmd)
+    except subprocess.TimeoutExpired:
         raise RuntimeError("Encoder subprocess timed out")
 
-    returncode = proc.returncode
-    stderr = (stderr_bytes or b"").decode(errors="replace")
-    stdout = (stdout_bytes or b"").decode(errors="replace")
-
-    # Log any debug output from the worker (stderr).
-    if stderr.strip():
-        _LOGGER.debug("Worker stderr: %s", stderr.strip()[:500])
-
-    if returncode != 0:
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout or "").strip()[:500]
         _LOGGER.error(
             "Encoder exit=%s stderr=%s stdout=%s",
-            returncode, stderr.strip()[:300], stdout.strip()[:200],
+            res.returncode,
+            (res.stderr or "").strip()[:300],
+            (res.stdout or "").strip()[:200],
         )
         raise RuntimeError(
-            f"Encoder subprocess exited {returncode}: "
-            f"{(stderr or stdout or 'no output').strip()[:500]}"
+            f"Encoder subprocess exited {res.returncode}: {err or 'no output'}"
         )
 
     try:
-        return json.loads(stdout.strip())
+        return json.loads(res.stdout.strip())
     except json.JSONDecodeError:
-        raise RuntimeError(f"Encoder returned bad JSON: {stdout[:200]}")
+        raise RuntimeError(f"Encoder returned bad JSON: {res.stdout[:200]}")
 
 
 # ── public API ───────────────────────────────────────────────────────────────

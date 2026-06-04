@@ -31,6 +31,10 @@ def main() -> int:
     native_dir = sys.argv[1]
     sys.path.insert(0, native_dir)
 
+    # Purge any stale cached module from previous runs.
+    sys.modules.pop("irhvac", None)
+    sys.modules.pop("_irhvac", None)
+
     try:
         import irhvac  # noqa: E402
     except ImportError as exc:
