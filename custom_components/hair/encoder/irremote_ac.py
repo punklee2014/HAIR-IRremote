@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import platform
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -66,12 +67,7 @@ def _worker_path() -> str:
 # ── pipe-based persistent worker ─────────────────────────────────────────────
 
 def _start_worker(hass) -> None:
-    """Fork the encoder worker ONCE at startup (avoids musl thread+fork).
-
-    The worker reads one JSON line from stdin, writes one JSON line to
-    stdout, then exits.  We keep stdin/stdout open for the lifetime of
-    the HA process.
-    """
+    """Fork the encoder worker ONCE at startup (avoids musl thread+fork)."""
     global _WORKER
     if _WORKER is not None and _WORKER.poll() is None:
         return
@@ -81,9 +77,21 @@ def _start_worker(hass) -> None:
         _LOGGER.warning("Cannot start encode worker: no native dir")
         return
 
+    # Find system python3 (NOT sys.executable — HA's Python 3.14 is
+    # incompatible with the musl-compiled .so).  Try common paths.
+    py_exe = None
+    for candidate in ("python3", "/usr/bin/python3", "/usr/local/bin/python3"):
+        found = shutil.which(candidate)
+        if found and os.path.isfile(found):
+            py_exe = found
+            break
+    if py_exe is None:
+        _LOGGER.error("Cannot find system python3 interpreter")
+        return
+
     try:
         _WORKER = subprocess.Popen(
-            ["/usr/bin/python3", "-u", _worker_path(), nd, "-"],  # "-" = stdin mode
+            [py_exe, "-u", _worker_path(), nd, "-"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
