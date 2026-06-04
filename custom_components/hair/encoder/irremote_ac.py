@@ -81,14 +81,15 @@ async def _call_worker(nd: str, args: list[str]) -> list[int]:
 
     Command: python3 subprocess_encode.py <nd> <proto> <model> <mode> <degrees> [flags]
     """
-    # Reproduce the proven manual test exactly:
-    #    cd <native_dir> && python3 <worker> <args>
-    # The cd matters — musl's dl searches CWD for .so files.
-    cmd = ["/bin/sh", "-c",
-           f"cd {nd} && exec {_get_system_python()} {_worker_path()} {nd} {' '.join(args)}"]
+    # Reproduce the proven manual test:
+    #   cd <native_dir> && python3 <worker> <nd> <args>
+    # Use cwd=nd to set the child's working directory BEFORE exec.
+    cmd = [_get_system_python(), _worker_path(), nd] + args
 
     def _run():
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              cwd=nd, timeout=5,
+                              start_new_session=True)
 
     loop = asyncio.get_running_loop()
     try:
