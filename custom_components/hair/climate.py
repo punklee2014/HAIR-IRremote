@@ -255,40 +255,42 @@ class HAIRClimateEntity(ClimateEntity):
     # ── debounced send for protocol AC ────────────────────────────────────
 
     def _mark_dirty(self) -> None:
-        """Signal that state has changed and a send is needed.
-
-        Debounces rapid changes (HA fires set_temp + set_mode + turn_on
-        in sequence) into a single ``sendAc()`` call that encodes all
-        states together in one IR frame.
-        """
+        """Signal that state has changed and a send is needed."""
+        _LOGGER.info("_mark_dirty called, is_protocol=%s hvac_mode=%s temp=%s",
+                     self._is_protocol, self._hvac_mode, self._target_temperature)
         if not self._is_protocol:
+            _LOGGER.debug("_mark_dirty: not protocol, skipping")
             return
         if self._debounce_task is None or self._debounce_task.done():
             self._debounce_task = self._manager._hass.async_create_task(
                 self._debounced_send()
             )
+        else:
+            _LOGGER.debug("_mark_dirty: task already pending, debouncing")
 
     async def _debounced_send(self) -> None:
-        """Wait 300 ms for HA to settle, then fire a single IR burst."""
-        await asyncio.sleep(0.3)
+        """Wait 200 ms for HA to settle, then fire a single IR burst."""
+        _LOGGER.debug("_debounced_send: sleeping 200ms")
+        await asyncio.sleep(0.2)
+        _LOGGER.debug("_debounced_send: calling _send_protocol")
         await self._send_protocol()
 
     async def _send_protocol(self) -> None:
-        """Encode and transmit the current device state as one IR frame.
-
-        ``IRac.sendAc()`` already packs mode + temp + fan + swing into a
-        single burst — we just pass the current entity state in one call.
-        """
+        """Encode and transmit the current device state as one IR frame."""
         from functools import partial
 
         from .encoder.irremote_ac import encode as ac_encode
 
         power = self._hvac_mode != HVACMode.OFF
-        mode = self._hvac_mode.value if isinstance(self._hvac_mode, HVACMode) else str(self._hvac_mode)
+        if power and isinstance(self._hvac_mode, HVACMode):
+            mode = self._hvac_mode.value
+        else:
+            mode = "off"
 
         _LOGGER.info(
-            "Sending protocol AC: power=%s mode=%s temp=%s fan=%s swing=%s",
-            power, mode, self._target_temperature, self._fan_mode, self._swing_mode,
+            "Sending protocol AC: power=%s mode=%s temp=%s fan=%s swing=%s device=%s",
+            power, mode, self._target_temperature, self._fan_mode,
+            self._swing_mode, self._device.name,
         )
 
         encode_fn = partial(
@@ -303,14 +305,13 @@ class HAIRClimateEntity(ClimateEntity):
 
         try:
             timings = await self._manager._hass.async_add_executor_job(encode_fn)
-        except ImportError as err:
-            _LOGGER.error("Protocol AC unavailable: %s", err)
-            raise RuntimeError(str(err)) from err
+            _LOGGER.info("Encoded %d timings, sending to emitter", len(timings))
         except Exception as err:
-            _LOGGER.exception("Protocol AC encoder crashed")
+            _LOGGER.exception("Protocol encoder failed")
             raise RuntimeError(f"Protocol encoder failed: {err}") from err
 
         await self._manager.async_send_raw_timings(self._device.id, timings)
+        _LOGGER.info("IR sent for %s", self._device.name)
 
     # ------------------------------------------------------------------
     # HVAC mode
