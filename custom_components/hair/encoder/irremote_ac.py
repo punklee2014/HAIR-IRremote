@@ -226,12 +226,21 @@ def encode(
         for k, v in os.environ.items():
             if k not in ("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH"):
                 clean_env[k] = v
-        # Use "python3" (system) instead of sys.executable (HA venv may
-        # differ from the ABI the .so was compiled against).
-        py_exe = shutil.which("python3") or sys.executable
+        # Use bare "python3" command so the OS PATH resolves to the
+        # system interpreter — this matches the verified working test.
+        py_exe = "python3"
 
         proc = subprocess.run(
             [py_exe, script_path, *cmd[2:]],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=clean_env,
+        )
+    except FileNotFoundError:
+        # Fallback if PATH doesn't have python3.
+        proc = subprocess.run(
+            [sys.executable, script_path, *cmd[2:]],
             capture_output=True,
             text=True,
             timeout=15,
@@ -241,9 +250,11 @@ def encode(
         raise RuntimeError("AC encoder subprocess timed out (15 s)")
 
     if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()[:300]
+        stderr = (proc.stderr or "").strip()[:500]
+        stdout = (proc.stdout or "").strip()[:200]
         raise RuntimeError(
-            f"AC encoder subprocess exited {proc.returncode}: {stderr}"
+            f"AC encoder subprocess exited {proc.returncode}: "
+            f"stderr={stderr} stdout={stdout}"
         )
 
     try:
