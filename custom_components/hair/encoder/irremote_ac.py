@@ -1,8 +1,8 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-Each button press fires a one-shot ``python3`` subprocess running
-``encode_worker.py`` via ``asyncio.create_subprocess_exec`` — fully
-async, zero thread pool usage, zero in-process C loading.
+Each button press calls ``subprocess_encode.py`` with clean POSITIONAL
+string args — matching the proven command-line test exactly.
+No JSON, no getattr issues, no SWIG type conflicts.
 """
 from __future__ import annotations
 
@@ -58,10 +58,8 @@ def _find_native_dir() -> str | None:
 
 
 def _worker_path() -> str:
-    return str(Path(__file__).parent / "encode_worker.py")
+    return str(Path(__file__).parent / "subprocess_encode.py")
 
-
-# ── system python3 (cached) ──────────────────────────────────────────────────
 
 _SYS_PYTHON: str | None = None
 
@@ -76,20 +74,14 @@ def _get_system_python() -> str:
             _SYS_PYTHON = found
             _LOGGER.info("System python3 at %s", found)
             return found
-    raise IRHVACUnavailableError(
-        "Cannot find system python3 — tried python3, /usr/bin/python3, "
-        "/usr/local/bin/python3"
-    )
+    raise IRHVACUnavailableError("Cannot find system python3")
 
 
-# ── async subprocess ─────────────────────────────────────────────────────────
+async def _call_worker(args: list[str]) -> list[int]:
+    """Run ``subprocess_encode.py`` with positional string args.
 
-async def _call_worker(params: dict[str, Any]) -> list[int]:
-    """Call ``encode_worker.py`` via ``loop.run_in_executor`` + ``subprocess.run``.
-
-    Uses a clean, minimal environment (matching the proven command-line
-    test) and dispatches through a raw OS thread to avoid any asyncio
-    signal interference on musl.
+    Matching the proven command-line test exactly — clean env,
+    raw OS thread, no JSON, no SWIG type issues.
     """
     nd = _find_native_dir()
     clean_env = {
@@ -99,21 +91,11 @@ async def _call_worker(params: dict[str, Any]) -> list[int]:
         "LD_LIBRARY_PATH": nd,
     }
 
-    args = [
-        _get_system_python(),
-        _worker_path(),
-        nd,
-        json.dumps(params),
-    ]
+    cmd = [_get_system_python(), _worker_path()] + args
 
     def _run_system_cmd():
-        return subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            env=clean_env,
-            timeout=5,
-        )
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              env=clean_env, timeout=5)
 
     loop = asyncio.get_running_loop()
     try:
@@ -123,12 +105,10 @@ async def _call_worker(params: dict[str, Any]) -> list[int]:
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "").strip()[:500]
-        _LOGGER.error(
-            "Encoder exit=%s stderr=%s stdout=%s",
-            res.returncode,
-            (res.stderr or "").strip()[:300],
-            (res.stdout or "").strip()[:200],
-        )
+        _LOGGER.error("Encoder exit=%s stderr=%s stdout=%s",
+                       res.returncode,
+                       (res.stderr or "").strip()[:300],
+                       (res.stdout or "").strip()[:200])
         raise RuntimeError(
             f"Encoder subprocess exited {res.returncode}: {err or 'no output'}"
         )
@@ -171,23 +151,24 @@ async def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    params: dict[str, Any] = {
-        "protocol": (device.ir_protocol or "COOLIX").upper(),
-        "model": device.ir_model or 1,
-        "power": bool(power),
-    }
-    if power:
-        params["mode"] = hvac_mode
-        params["degrees"] = round(temperature) if temperature is not None else 24
-        if fan_mode:
-            params["fanspeed"] = fan_mode
-        if swing_mode and swing_mode != "off":
-            if swing_mode in ("vertical", "on", "both"):
-                params["swingv"] = 0
-            if swing_mode in ("horizontal", "both"):
-                params["swingh"] = 0
+    nd = _find_native_dir()
+    proto = (device.ir_protocol or "COOLIX").upper()
+    model = str(device.ir_model or 1)
+    mode = str(hvac_mode).lower()
+    temp = str(round(temperature) if temperature is not None else 24)
 
-    raw = await _call_worker(params)
+    # Positional args — same format as proven command-line test.
+    cmd_args = [nd, proto, model, mode, temp]
+
+    if not power:
+        cmd_args.append("--off")
+    else:
+        if fan_mode:
+            cmd_args.extend(["--fan", str(fan_mode).lower()])
+        if swing_mode and swing_mode != "off":
+            cmd_args.extend(["--swing", str(swing_mode).lower()])
+
+    raw = await _call_worker(cmd_args)
 
     signed: list[int] = []
     for i, val in enumerate(raw):
