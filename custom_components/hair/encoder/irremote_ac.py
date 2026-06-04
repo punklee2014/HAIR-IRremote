@@ -1,28 +1,32 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-Encoding runs through a **shell script** under /tmp — the HA process
-never imports irhvac and never forks.  The shell script is called via
-:func:`os.system`, which uses ``/bin/sh -c`` exactly like the proven
-manual test.
+Loads ``irhvac`` in-process.  The manual test:
+    cd /config/.../native/linux_aarch64_musl
+    python3 -c "import irhvac; ..."
+proves this works from the command line in the HA container.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 import platform
-import shlex
-import tempfile
+import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from ..models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
 
+_irhvac: ModuleType | None = None
+
+_PROTOCOL_MAP: dict[str, int] = {}
+_MODE_MAP: dict[str, int] = {}
+_FAN_MAP: dict[str, int] = {}
+
 
 class IRHVACUnavailableError(ImportError):
-    pass
+    """Raised when the native irhvac module cannot be loaded."""
 
 
 PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
@@ -46,8 +50,6 @@ PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
     "WHIRLPOOL_AC": [{"value": 1, "label": "DG11J13A (Default)"}, {"value": 2, "label": "DG11J191"}],
 }
 
-_HARDCODED_PROTOCOLS = sorted(PROTOCOL_MODELS.keys())
-
 
 def _find_native_dir() -> str | None:
     _NATIVE_DIR = Path(__file__).parent.parent / "native"
@@ -65,82 +67,57 @@ def _find_native_dir() -> str | None:
     return None
 
 
-# ---- write shell script + Python script to /tmp (once) -----------------------
+def _import_irhvac() -> ModuleType:
+    global _irhvac
+    if _irhvac is not None:
+        return _irhvac
 
-_SHELL_SCRIPT: str | None = None
-_PYTHON_SCRIPT: str | None = None
-
-
-def _init_scripts(nd: str) -> tuple[str, str]:
-    global _SHELL_SCRIPT, _PYTHON_SCRIPT
-    if _SHELL_SCRIPT is not None and os.path.isfile(_SHELL_SCRIPT):
-        return _SHELL_SCRIPT, _PYTHON_SCRIPT  # type: ignore[return-value]
-
-    # Python encode script.
-    py_code = fr"""
-import json, sys
-sys.path.insert(0, {shlex.quote(nd)})
-import irhvac
-
-infile = sys.argv[1]
-outfile = sys.argv[2]
-params = json.loads(open(infile).read())
-
-ac = irhvac.IRac(0)
-ac.next.protocol = params["protocol"]
-ac.next.model = params.get("model", 1)
-ac.next.power = params["power"]
-if params["power"]:
-    ac.next.mode = params["mode"]
-    if "degrees" in params:
-        ac.next.degrees = params["degrees"]
-    if "fanspeed" in params:
-        ac.next.fanspeed = params["fanspeed"]
-    if "swingv" in params:
-        ac.next.swingv = params["swingv"]
-    if "swingh" in params:
-        ac.next.swingh = params["swingh"]
-
-ac.sendAc()
-t = ac.getTiming()
-if t is None:
-    sys.exit(1)
-with open(outfile, "w") as f:
-    json.dump(t, f)
-"""
-    fd, py_path = tempfile.mkstemp(suffix=".py", prefix="hair_enc_", dir="/tmp")
-    with os.fdopen(fd, "w") as f:
-        f.write(py_code)
-    os.chmod(py_path, 0o644)
-    _PYTHON_SCRIPT = py_path
-
-    # Shell wrapper — /bin/sh explicitly to match "shell" in manual test.
-    # NB: CD into the native dir FIRST so the dynamic linker resolves
-    #     _irhvac.so relative to the working directory (matching manual test).
-    sh_code = f"""#!/bin/sh
-/usr/bin/python3 {shlex.quote(py_path)} "$1" "$2"
-"""
-    fd, sh_path = tempfile.mkstemp(suffix=".sh", prefix="hair_run_", dir="/tmp")
-    with os.fdopen(fd, "w") as f:
-        f.write(sh_code)
-    os.chmod(sh_path, 0o755)
-    _SHELL_SCRIPT = sh_path
-
-    _LOGGER.info("Init encode scripts: py=%s sh=%s", py_path, sh_path)
-    return sh_path, py_path
-
-
-# ---- public API -------------------------------------------------------------
-
-def probe_protocol_encoder() -> tuple[bool, str | None]:
     nd = _find_native_dir()
     if nd is None:
-        return False, "No native irhvac directory found"
-    return True, None
+        raise IRHVACUnavailableError("No native irhvac directory")
+
+    # Exactly what the manual test does.
+    import importlib
+
+    if nd not in sys.path:
+        sys.path.insert(0, nd)
+
+    mod = importlib.import_module("irhvac")
+    if not hasattr(mod, "IRac"):
+        raise IRHVACUnavailableError(f"irhvac from {nd} missing IRac")
+
+    _irhvac = mod
+    _LOGGER.info("Loaded irhvac from %s", nd)
+
+    # Build maps.
+    for attr in dir(mod):
+        if attr.isupper() and not attr.startswith("_") and isinstance(getattr(mod, attr), int):
+            _PROTOCOL_MAP[attr.upper()] = getattr(mod, attr)
+
+    _MODE_MAP["auto"] = getattr(mod, "opmode_t_kAuto", 0)
+    _MODE_MAP["cool"] = getattr(mod, "opmode_t_kCool", 1)
+    _MODE_MAP["heat"] = getattr(mod, "opmode_t_kHeat", 2)
+    _MODE_MAP["dry"] = getattr(mod, "opmode_t_kDry", 3)
+    _MODE_MAP["fan_only"] = getattr(mod, "opmode_t_kFan", 4)
+
+    _FAN_MAP["auto"] = getattr(mod, "fanspeed_t_kAuto", 0)
+    _FAN_MAP["low"] = getattr(mod, "fanspeed_t_kLow", 2)
+    _FAN_MAP["medium"] = getattr(mod, "fanspeed_t_kMedium", 3)
+    _FAN_MAP["high"] = getattr(mod, "fanspeed_t_kHigh", 4)
+
+    return mod
+
+
+def probe_protocol_encoder() -> tuple[bool, str | None]:
+    try:
+        _import_irhvac()
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
 
 
 def is_protocol_encoder_available() -> bool:
-    return _find_native_dir() is not None
+    return probe_protocol_encoder()[0]
 
 
 def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str, int | str]]]:
@@ -151,7 +128,11 @@ def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str,
 
 
 def get_supported_protocols() -> list[str]:
-    return list(_HARDCODED_PROTOCOLS)
+    try:
+        _import_irhvac()
+        return sorted(_PROTOCOL_MAP.keys())
+    except IRHVACUnavailableError:
+        return sorted(PROTOCOL_MODELS.keys())
 
 
 def encode(
@@ -164,112 +145,44 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    nd = _find_native_dir()
-    if nd is None:
-        raise IRHVACUnavailableError("No native irhvac directory found")
+    mod = _import_irhvac()
 
-    sh_script, py_script = _init_scripts(nd)  # noqa: F841
+    protocol_name = (device.ir_protocol or "").upper()
+    if protocol_name not in _PROTOCOL_MAP:
+        raise ValueError(f"Unknown IR protocol '{device.ir_protocol}'")
 
-    # Build params: use hardcoded int values for protocol/mode/fan.
-    params: dict[str, Any] = {
-        "protocol": _PROTO_VAL.get(device.ir_protocol or "", 15),  # default COOLIX
-        "model": device.ir_model or 1,
-        "power": power,
-    }
+    ac = mod.IRac(0)
+    ac.next.protocol = _PROTOCOL_MAP[protocol_name]
+    ac.next.model = device.ir_model or 1
+
     if power:
-        params["mode"] = _MODE_VAL.get(hvac_mode.lower(), 0)
-        params["degrees"] = round(temperature) if temperature is not None else 24
-        if fan_mode:
-            params["fanspeed"] = _FAN_VAL.get(fan_mode.lower(), 2)
-        if swing_mode and swing_mode != "off":
-            if swing_mode in ("vertical", "on", "both"):
-                params["swingv"] = 0
-            if swing_mode in ("horizontal", "both"):
-                params["swingh"] = 0
+        ac.next.power = True
+        ac.next.mode = _MODE_MAP.get(hvac_mode, _MODE_MAP["auto"])
+        if temperature is not None:
+            ac.next.degrees = round(temperature)
+        if fan_mode and fan_mode in _FAN_MAP:
+            ac.next.fanspeed = _FAN_MAP[fan_mode]
+        if swing_mode:
+            if swing_mode in ("vertical", "on"):
+                ac.next.swingv = getattr(mod, "swingv_t_kAuto", 0)
+            elif swing_mode == "horizontal":
+                ac.next.swingh = getattr(mod, "swingh_t_kAuto", 0)
+            elif swing_mode == "both":
+                ac.next.swingv = getattr(mod, "swingv_t_kAuto", 0)
+                ac.next.swingh = getattr(mod, "swingh_t_kAuto", 0)
+    else:
+        ac.next.power = False
 
-    # Write params + result to temp files.
-    fd1, params_file = tempfile.mkstemp(suffix=".json", prefix="hair_p_", dir="/tmp")
-    with os.fdopen(fd1, "w") as f:
-        json.dump(params, f)
+    ac.sendAc()
 
-    fd2, result_file = tempfile.mkstemp(suffix=".json", prefix="hair_r_", dir="/tmp")
-    os.close(fd2)
-
-    cmd = f"/bin/sh {shlex.quote(sh_script)} {shlex.quote(params_file)} {shlex.quote(result_file)}"
-    _LOGGER.debug("Running: %s", cmd)
-
-    rc = os.system(cmd)
-
-    if rc != 0:
-        err = ""
-        try:
-            if os.path.getsize(result_file) > 0:
-                with open(result_file) as f:
-                    err = f.read()[:500]
-        except Exception:
-            pass
-        raise RuntimeError(f"Encoder exited {rc}: {err.strip()}")
-
-    try:
-        with open(result_file) as f:
-            raw: list[int] = json.loads(f.read().strip())
-    except Exception as exc:
-        raise RuntimeError(f"Encoder result parse error: {exc}")
-
-    # Cleanup.
-    for tmp in (params_file, result_file):
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+    raw = ac.getTiming()
+    if raw is None:
+        raise RuntimeError("IRac.getTiming() returned None")
 
     signed: list[int] = []
     for i, val in enumerate(raw):
         signed.append(int(val) if i % 2 == 0 else -int(val))
 
+    ac.resetTiming()
+    _LOGGER.debug("Encoded %s: %d timings", protocol_name, len(signed))
     return signed
-
-
-# ---- hardcoded int values (matches irhvac constants) ------------------------
-
-# Everyone uses the same opmode/fanspeed/swing constants.
-# These are taken from the IRremoteESP8266 source.
-_PROTO_VAL: dict[str, int] = {
-    # From decode_type_t enum in vendor/IRremoteESP8266/src/IRremoteESP8266.h
-    "UNKNOWN": -1, "UNUSED": 0, "RC5": 1, "RC6": 2, "NEC": 3, "SONY": 4,
-    "PANASONIC": 5, "JVC": 6, "SAMSUNG": 7, "WHYNTER": 8, "AIWA_RC_T501": 9,
-    "LG": 10, "SANYO": 11, "MITSUBISHI": 12, "DISH": 13, "SHARP": 14,
-    "COOLIX": 15, "DAIKIN": 16, "DENON": 17, "KELVINATOR": 18, "SHERWOOD": 19,
-    "MITSUBISHI_AC": 20, "RCMM": 21, "SANYO_LC7461": 22, "RC5X": 23,
-    "GREE": 24, "PRONTO": 25, "NEC_LIKE": 26, "ARGO": 27, "TROTEC": 28,
-    "NIKAI": 29, "RAW": 30, "GLOBALCACHE": 31, "TOSHIBA_AC": 32,
-    "FUJITSU_AC": 33, "MIDEA": 34, "MAGIQUEST": 35, "LASERTAG": 36,
-    "CARRIER_AC": 37, "HAIER_AC": 38, "MITSUBISHI2": 39, "HITACHI_AC": 40,
-    "HITACHI_AC1": 41, "HITACHI_AC2": 42, "GICABLE": 43,
-    "HAIER_AC_YRW02": 44, "WHIRLPOOL_AC": 45, "SAMSUNG_AC": 46,
-    "LUTRON": 47, "ELECTRA_AC": 48, "PANASONIC_AC": 49, "PIONEER": 50,
-    "LG2": 51, "MWM": 52, "DAIKIN2": 53, "VESTEL_AC": 54, "TECO": 55,
-    "SAMSUNG36": 56, "TCL112AC": 57, "LEGOPF": 58, "MITSUBISHI_HEAVY_88": 59,
-    "MITSUBISHI_HEAVY_152": 60, "DAIKIN216": 61, "SHARP_AC": 62,
-    "GOODWEATHER": 63, "INAX": 64, "DAIKIN160": 65, "NEOCLIMA": 66,
-    "DAIKIN176": 67, "DAIKIN128": 68, "AMCOR": 69, "DAIKIN152": 70,
-    "DAIKIN64": 71, "DELONGHI_AC": 72, "MULTIBRACKETS": 73, "DAIKIN312": 83,
-    "TOSHIBA_AC2": 84, "KELON168": 85, "TCL96AC": 86, "MIDEA24": 87,
-    "DAIKIN200": 88, "HAIER_AC176": 89, "VOLTAS": 90, "TRANSCOLD": 91,
-    "TECHNIBEL_AC": 92, "MIRAGE": 93, "DAIKIN_AC152": 94, "CORONA_AC": 95,
-    "ELITESCREENS": 96, "AIRTON": 97, "AIRWELL": 98, "DELONGHI": 99,
-    "DOSHISHA": 100, "EPSON": 101, "SYMPHONY": 102, "GORENJE": 103,
-    "KELON": 104, "CARRIER_AC40": 105, "CARRIER_AC64": 106, "CARRIER_AC128": 107,
-    "CLIMABUTLER": 108, "BOSCH144": 109, "WOWWEE": 110,
-    "CARRIER_AC84": 111, "YORK": 112, "BLUESTARHEAVY": 113, "HITACHI_AC344": 114,
-    "HITACHI_AC264": 115, "HITACHI_AC296": 116, "HITACHI_AC424": 117,
-    "SAMSUNG_AC2": 118, "XMP": 119, "HAIER_AC160": 120, "TEKNOPOINT": 121,
-    "ZEPEAL": 122, "TRUMA": 123, "CORONA": 124, "METZ": 125, "TOTO": 126,
-    "ARGO2": 127, "BOSE": 128, "ARRIS": 129, "RHOSS": 130, "EUROM": 131,
-}
-_MODE_VAL: dict[str, int] = {
-    "off": -1, "auto": 0, "cool": 1, "heat": 2, "dry": 3, "fan_only": 4,
-}
-_FAN_VAL: dict[str, int] = {
-    "auto": 0, "min": 1, "low": 2, "medium": 3, "high": 4, "max": 5,
-}
