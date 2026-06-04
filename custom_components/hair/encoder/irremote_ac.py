@@ -75,12 +75,17 @@ def _get_system_python() -> str:
 
 
 async def _call_worker(nd: str, args: list[str]) -> list[int]:
-    """通过数组形式直接拉起子进程，cd 到 native 目录以匹配验证过的命令行。"""
+    """通过 /bin/sh -c 拉起子进程，完全匹配已验证的命令行格式。
 
-    cmd = [_get_system_python(), _worker_path(), nd] + args
+    shell_cmd = cd {nd} && python3 {worker} {nd} {args}
+    """
+    shell_cmd = f"cd {nd} && python3 {_worker_path()} {nd} {' '.join(args)}"
 
     def _run():
-        return subprocess.run(cmd, capture_output=True, text=True, cwd=nd, timeout=5)
+        return subprocess.run(
+            ["/bin/sh", "-c", shell_cmd],
+            capture_output=True, text=True, timeout=5,
+        )
 
     loop = asyncio.get_running_loop()
     try:
