@@ -255,24 +255,24 @@ class HAIRClimateEntity(ClimateEntity):
     # ── debounced send for protocol AC ────────────────────────────────────
 
     def _notify(self) -> None:
-        """Schedule a debounced send — cancels any previous pending send,
-        then waits 500ms for HA to finish batching its state changes,
-        then fires ONE IR burst."""
+        """If a send is already in-flight, skip.  Otherwise fire after
+        300ms settle.  Each setter calls this, so rapid HA batches result
+        in exactly one IR burst."""
         if not self._is_protocol:
             return
         if self._send_task is not None and not self._send_task.done():
+            # Cancel the pending sleep and reschedule — last write wins.
             self._send_task.cancel()
         self._send_task = self._manager._hass.async_create_task(
-            self._debounced_send()
+            self._delayed_send()
         )
 
-    async def _debounced_send(self) -> None:
-        """Sleep 500ms, then encode + transmit."""
+    async def _delayed_send(self) -> None:
         try:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
             await self._do_send()
         except asyncio.CancelledError:
-            pass  # cancelled by a newer _notify call — correct behavior
+            pass
 
     async def _do_send(self) -> None:
         """Encode and transmit the current device state as one IR frame."""
