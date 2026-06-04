@@ -1,39 +1,30 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-Translates HA climate commands into raw IR timings via the irhvac native
-module.  The returned ``list[int]`` uses signed microseconds:
-positive = mark, negative = space (HA 2026.5+ / infrared-protocols v2.0+).
+All native code runs in a subprocess — the HA process never imports
+``irhvac`` / ``_irhvac.so``.  This prevents C++ segfaults (seen on
+musl/aarch64) from taking down Home Assistant.
 """
 from __future__ import annotations
 
 import json
 import logging
+import platform
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from ..models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
 
-# Cache the loaded irhvac module (set on first successful import).
-_irhvac: ModuleType | None = None
-
-# Protocol / mode / fan-speed maps (populated at first import).
-_PROTOCOL_MAP: dict[str, int] = {}
-_MODE_MAP: dict[str, int] = {}
-_FAN_MAP: dict[str, int] = {}
-
+# ---- error markers ----------------------------------------------------------
 
 class IRHVACUnavailableError(ImportError):
     """Raised when the native irhvac module cannot be loaded."""
 
 
-_encoder_probe: tuple[bool, str | None] | None = None
-
-# ---- protocol model table (same as before) ----------------------------------
+# ---- protocol model table (static, no native dependency) ---------------------
 
 PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
     "ARGO": [
@@ -107,22 +98,54 @@ PROTOCOL_MODELS: dict[str, list[dict[str, int | str]]] = {
     ],
 }
 
-# ---- public API -------------------------------------------------------------
+# Hardcoded protocol list (subset from IRremoteESP8266 SupportedProtocols.md).
+# Used when the native module is unavailable.
+_HARDCODED_PROTOCOLS = [
+    "ARGO", "COOLIX", "DAIKIN", "DAIKIN128", "DAIKIN152", "DAIKIN160",
+    "DAIKIN176", "DAIKIN2", "DAIKIN216", "DAIKIN312", "DAIKIN64",
+    "ELECTRA_AC", "FUJITSU_AC", "GOODWEATHER", "GREE", "HAIER_AC",
+    "HAIER_AC176", "HAIER_AC_YRW02", "HITACHI_AC", "HITACHI_AC1",
+    "HITACHI_AC264", "HITACHI_AC296", "HITACHI_AC344", "HITACHI_AC424",
+    "KELVINATOR", "MIDEA", "MITSUBISHI_AC", "MITSUBISHI136",
+    "MITSUBISHI152", "MITSUBISHI_AC", "NEOCLIMA", "PANASONIC_AC",
+    "SAMSUNG_AC", "SANYO_AC", "SHARP_AC", "TCL96AC", "TECHNIBEL_AC",
+    "TOSHIBA_AC", "TRANSCOLD", "TROTEC", "VESTEL_AC", "VOLTAS",
+    "WHIRLPOOL_AC",
+]
+
+
+# ---- internal: native directory resolution (no irhvac import) ----------------
+
+def _find_native_dir() -> str | None:
+    """Return the native dir containing irhvac.py + _irhvac.so, or None."""
+    _NATIVE_DIR = Path(__file__).parent.parent / "native"
+    machine = platform.machine()
+    if machine in ("aarch64", "arm64", "armv8l", "armv8b"):
+        arch = "linux_aarch64"
+    elif machine in ("x86_64", "amd64", "AMD64"):
+        arch = "linux_x86_64"
+    else:
+        arch = "linux_x86_64"
+
+    # Prefer musl, fallback glibc.
+    for suffix in ("_musl", ""):
+        d = _NATIVE_DIR / f"{arch}{suffix}"
+        if (d / "irhvac.py").is_file() and (d / "_irhvac.so").is_file():
+            return str(d)
+    return None
+
+
+# ---- public API (no irhvac import) -------------------------------------------
 
 def probe_protocol_encoder() -> tuple[bool, str | None]:
-    global _encoder_probe
-    if _encoder_probe is not None:
-        return _encoder_probe
-    try:
-        _get_irhvac()
-        _encoder_probe = (True, None)
-    except ImportError as exc:
-        _encoder_probe = (False, str(exc))
-    return _encoder_probe
+    nd = _find_native_dir()
+    if nd is None:
+        return False, "No native irhvac directory found"
+    return True, None
 
 
 def is_protocol_encoder_available() -> bool:
-    return probe_protocol_encoder()[0]
+    return _find_native_dir() is not None
 
 
 def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str, int | str]]]:
@@ -133,56 +156,30 @@ def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str,
 
 
 def get_supported_protocols() -> list[str]:
-    _get_irhvac()
-    return sorted(_PROTOCOL_MAP.keys())
-
-
-# ---- internal: load ---------------------------------------------------------
-
-def _get_irhvac() -> ModuleType:
-    global _irhvac
-    if _irhvac is not None:
-        return _irhvac
-    from .loader import load_irhvac
+    nd = _find_native_dir()
+    if nd is None:
+        return list(_HARDCODED_PROTOCOLS)
+    # Try a quick subprocess to list protocols.
     try:
-        _irhvac = load_irhvac()
-    except ImportError as exc:
-        raise IRHVACUnavailableError(str(exc)) from exc
-    _build_maps(_irhvac)
-    return _irhvac
+        proc = subprocess.run(
+            [
+                sys.executable, "-c",
+                "import sys; sys.path.insert(0, {!r}); "
+                "import irhvac; "
+                "print(repr([a for a in dir(irhvac) "
+                "if a.isupper() and not a.startswith('_') "
+                "and isinstance(getattr(irhvac, a), int)]))".format(nd),
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return sorted(eval(proc.stdout.strip()))
+    except Exception:
+        pass
+    return list(_HARDCODED_PROTOCOLS)
 
 
-def _build_maps(irhvac: ModuleType) -> None:
-    for attr in dir(irhvac):
-        if attr.isupper() and not attr.startswith("_"):
-            val = getattr(irhvac, attr, None)
-            if isinstance(val, int):
-                _PROTOCOL_MAP[attr.upper()] = val
-
-    _MODE_MAP["auto"] = getattr(irhvac, "opmode_t_kAuto", 0)
-    _MODE_MAP["cool"] = getattr(irhvac, "opmode_t_kCool", 0)
-    _MODE_MAP["heat"] = getattr(irhvac, "opmode_t_kHeat", 0)
-    _MODE_MAP["dry"] = getattr(irhvac, "opmode_t_kDry", 0)
-    _MODE_MAP["fan_only"] = getattr(irhvac, "opmode_t_kFan", 0)
-
-    _FAN_MAP["auto"] = getattr(irhvac, "fanspeed_t_kAuto", 0)
-    _FAN_MAP["low"] = getattr(irhvac, "fanspeed_t_kLow", 0)
-    _FAN_MAP["medium"] = getattr(irhvac, "fanspeed_t_kMedium", 0)
-    _FAN_MAP["high"] = getattr(irhvac, "fanspeed_t_kHigh", 0)
-
-
-# ---- internal: encode -------------------------------------------------------
-
-def _native_dir() -> str:
-    """Return the path to the native dir that has irhvac.py + _irhvac.so."""
-    from .loader import _get_arch_dir, _native_candidates
-
-    arch = _get_arch_dir()
-    for p in _native_candidates(arch):
-        if (p / "irhvac.py").is_file() and (p / "_irhvac.so").is_file():
-            return str(p)
-    raise IRHVACUnavailableError("No native irhvac directory found")
-
+# ---- public: encode (always via subprocess) ----------------------------------
 
 def encode(
     device: IRDevice,
@@ -194,46 +191,31 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    """Encode AC state via a child process (crash-safe for musl)."""
-    # Pre-load lightweight Python-side only (for protocol names / maps).
-    # Actual encoding runs in a subprocess → segfault won't kill HA.
-    irhvac = _get_irhvac()
-
-    protocol_name = (device.ir_protocol or "").upper()
-    if protocol_name not in _PROTOCOL_MAP:
-        raise ValueError(
-            f"Unknown IR protocol '{device.ir_protocol}'. "
-            f"Supported: {sorted(_PROTOCOL_MAP.keys())}"
+    """Encode an AC state as raw IR timings via a child process."""
+    nd = _find_native_dir()
+    if nd is None:
+        raise IRHVACUnavailableError(
+            "No native irhvac directory found for this platform"
         )
 
-    nd = _native_dir()
     script_path = str(Path(__file__).parent / "subprocess_encode.py")
+    protocol_name = (device.ir_protocol or "").strip()
 
-    # Build command-line args.
     cmd: list[str] = [
         sys.executable, script_path, nd,
-        str(_PROTOCOL_MAP[protocol_name]),
+        protocol_name,
         str(device.ir_model or 1),
-        str(_MODE_MAP.get(hvac_mode, _MODE_MAP["auto"])),
+        hvac_mode,
         str(round(temperature) if temperature is not None else 24),
     ]
     if not power:
         cmd.append("--off")
-    if fan_mode and fan_mode in _FAN_MAP:
-        cmd += ["--fan", str(_FAN_MAP[fan_mode])]
-    if swing_mode:
-        irhvac = _get_irhvac()  # already have it, reuse
-        if swing_mode in ("vertical", "on"):
-            cmd += ["--swingv", str(getattr(irhvac, "swingv_t_kAuto", 0))]
-        elif swing_mode in ("horizontal",):
-            cmd += ["--swingh", str(getattr(irhvac, "swingh_t_kAuto", 0))]
-        elif swing_mode in ("both",):
-            cmd += [
-                "--swingv", str(getattr(irhvac, "swingv_t_kAuto", 0)),
-                "--swingh", str(getattr(irhvac, "swingh_t_kAuto", 0)),
-            ]
+    if fan_mode:
+        cmd += ["--fan", fan_mode]
+    if swing_mode and swing_mode != "off":
+        cmd += ["--swing", swing_mode]
 
-    _LOGGER.info("Subprocess AC encode: %s protocol=%s", " ".join(cmd[2:]), protocol_name)
+    _LOGGER.info("Subprocess AC encode: %s", " ".join(cmd[2:]))
 
     try:
         proc = subprocess.run(
@@ -247,15 +229,18 @@ def encode(
 
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()[:300]
-        raise RuntimeError(f"AC encoder subprocess exited {proc.returncode}: {stderr}")
+        raise RuntimeError(
+            f"AC encoder subprocess exited {proc.returncode}: {stderr}"
+        )
 
-    # Parse JSON output.
     try:
         raw: list[int] = json.loads(proc.stdout.strip())
     except json.JSONDecodeError:
-        raise RuntimeError(f"AC encoder returned bad JSON: {proc.stdout[:200]}")
+        raise RuntimeError(
+            f"AC encoder returned bad JSON: {proc.stdout[:200]}"
+        )
 
-    # Convert all-positive [mark, space, ...] to signed [mark, -space, ...].
+    # Convert all-positive [mark, space, ...] to signed.
     signed: list[int] = []
     for i, val in enumerate(raw):
         if i % 2 == 0:

@@ -72,13 +72,10 @@ async def async_setup_entry(
     trigger_manager = TriggerManager(hass, store)
     signal_monitor = SignalMonitor(hass, signal_store, store, trigger_manager)
 
-    # Probe native encoder in executor thread — avoids blocking I/O
-    # (musl detection scans /lib) inside the event loop.
+    # Probe native encoder — just checks filesystem (no native code loaded here).
     from .encoder.irremote_ac import probe_protocol_encoder
 
-    protocol_ok, protocol_err = await hass.async_add_executor_job(
-        probe_protocol_encoder
-    )
+    protocol_ok, protocol_err = probe_protocol_encoder()
     if not protocol_ok:
         _LOGGER.warning(
             "Protocol AC encoder unavailable on this host: %s. "
