@@ -77,11 +77,11 @@ def _get_system_python() -> str:
     raise IRHVACUnavailableError("Cannot find system python3")
 
 
-async def _call_worker(args: list[str]) -> list[int]:
-    """Run ``subprocess_encode.py`` with positional string args.
+async def _call_worker(params: dict[str, Any]) -> list[int]:
+    """Run ``subprocess_encode.py <native_dir> --stdin < json``.
 
-    Matching the proven command-line test exactly — clean env,
-    raw OS thread, no JSON, no SWIG type issues.
+    Command line is fixed (2 positional args).  All variable protocol
+    parameters go through stdin as JSON — unlimited extensibility.
     """
     nd = _find_native_dir()
     clean_env = {
@@ -91,11 +91,12 @@ async def _call_worker(args: list[str]) -> list[int]:
         "LD_LIBRARY_PATH": nd,
     }
 
-    cmd = [_get_system_python(), _worker_path()] + args
+    cmd = [_get_system_python(), _worker_path(), nd, "--stdin"]
+    json_bytes = json.dumps(params).encode()
 
     def _run_system_cmd():
-        return subprocess.run(cmd, capture_output=True, text=True,
-                              env=clean_env, timeout=5)
+        return subprocess.run(cmd, input=json_bytes, capture_output=True,
+                              text=True, env=clean_env, timeout=5)
 
     loop = asyncio.get_running_loop()
     try:
@@ -151,24 +152,25 @@ async def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    nd = _find_native_dir()
-    proto = (device.ir_protocol or "COOLIX").upper()
-    model = str(device.ir_model or 1)
-    mode = str(hvac_mode).lower()
-    temp = str(round(temperature) if temperature is not None else 24)
-
-    # Positional args — same format as proven command-line test.
-    cmd_args = [nd, proto, model, mode, temp]
-
-    if not power:
-        cmd_args.append("--off")
-    else:
+    # Build JSON params dict — any new protocol features just add keys.
+    # The worker reads whatever keys are present, ignores unknown ones.
+    params: dict[str, Any] = {
+        "protocol": (device.ir_protocol or "COOLIX").upper(),
+        "model": int(device.ir_model or 1),
+        "power": bool(power),
+    }
+    if power:
+        params["mode"] = hvac_mode
+        params["degrees"] = round(temperature) if temperature is not None else 24
         if fan_mode:
-            cmd_args.extend(["--fan", str(fan_mode).lower()])
+            params["fanspeed"] = str(fan_mode).lower()
         if swing_mode and swing_mode != "off":
-            cmd_args.extend(["--swing", str(swing_mode).lower()])
+            if swing_mode in ("vertical", "on", "both"):
+                params["swingv"] = str(swing_mode)
+            if swing_mode in ("horizontal", "both"):
+                params["swingh"] = str(swing_mode)
 
-    raw = await _call_worker(cmd_args)
+    raw = await _call_worker(params)
 
     signed: list[int] = []
     for i, val in enumerate(raw):
