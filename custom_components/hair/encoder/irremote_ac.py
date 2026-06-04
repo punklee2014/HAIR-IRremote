@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import platform
 import shutil
 import subprocess
@@ -82,20 +81,14 @@ async def _call_worker(nd: str, args: list[str]) -> list[int]:
 
     Command: python3 subprocess_encode.py <nd> <proto> <model> <mode> <degrees> [flags]
     """
-    cmd = [_get_system_python(), _worker_path(), nd] + args
-
-    # Clean env: PYTHONPATH + LD_LIBRARY_PATH point to native dir so
-    # musl's dynamic linker resolves _irhvac.so correctly.
-    clean_env = {
-        "PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "HOME": "/tmp",
-        "PYTHONPATH": nd,
-        "LD_LIBRARY_PATH": nd,
-    }
+    # Reproduce the proven manual test exactly:
+    #    cd <native_dir> && python3 <worker> <args>
+    # The cd matters — musl's dl searches CWD for .so files.
+    cmd = ["/bin/sh", "-c",
+           f"cd {nd} && exec {_get_system_python()} {_worker_path()} {nd} {' '.join(args)}"]
 
     def _run():
-        return subprocess.run(cmd, capture_output=True, text=True,
-                              env=clean_env, timeout=5)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=5)
 
     loop = asyncio.get_running_loop()
     try:
