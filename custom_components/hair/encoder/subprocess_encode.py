@@ -16,18 +16,20 @@ import sys
 from pathlib import Path
 
 
-def _build_map(mod, prefix: str, name: str) -> dict[str, int]:
+def _build_map(mod, prefix: str, strip_leading_k: bool = False) -> dict[str, int]:
+    """Build a {lowercase_name: int_value} dict from irhvac attributes.
+
+    e.g. prefix="opmode_t_" on `opmode_t_kCool` → key "cool".
+    If strip_leading_k=True, strips an extra leading "k" used by mode enums.
+    """
     m: dict[str, int] = {}
     for attr in dir(mod):
         if attr.startswith(prefix):
             key = attr[len(prefix):]
+            if strip_leading_k and key.startswith("k"):
+                key = key[1:]
             if key:
-                m[key] = getattr(mod, attr, 0)
-    # Accept both the key and its lowercase equivalent.
-    lower: dict[str, int] = {}
-    for k, v in m.items():
-        lower[k.lower()] = v
-    m.update(lower)
+                m[key.lower()] = getattr(mod, attr, 0)
     return m
 
 
@@ -81,15 +83,17 @@ def main() -> None:
         sys.exit(1)
     protocol_val = protocols[protocol_name]
 
-    # Mode lookup.
-    mode_map = _build_map(irhvac, "opmode_t_", "opmode_t_")
-    if mode_str not in mode_map:
-        print(f"ERROR: unknown mode {mode_str}", file=sys.stderr)
-        sys.exit(1)
-    mode_val = mode_map[mode_str]
+    # Mode lookup (skip if power is off — mode is irrelevant).
+    mode_val = 0
+    if power or mode_str not in ("off",):
+        mode_map = _build_map(irhvac, "opmode_t_", strip_leading_k=True)
+        if mode_str not in mode_map:
+            print(f"ERROR: unknown mode {mode_str}", file=sys.stderr)
+            sys.exit(1)
+        mode_val = mode_map[mode_str]
 
-    # Fan lookup.
-    fan_map = _build_map(irhvac, "fanspeed_t_", "fanspeed_t_")
+    # Fan lookup (also uses k prefix: fanspeed_t_kLow → low).
+    fan_map = _build_map(irhvac, "fanspeed_t_", strip_leading_k=True)
 
     # ---- encode -----------------------------------------------------------
     ac = irhvac.IRac(0)
