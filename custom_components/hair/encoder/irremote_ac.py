@@ -81,15 +81,14 @@ async def _call_worker(nd: str, args: list[str]) -> list[int]:
 
     Command: python3 subprocess_encode.py <nd> <proto> <model> <mode> <degrees> [flags]
     """
-    # Reproduce the proven manual test:
-    #   cd <native_dir> && python3 <worker> <nd> <args>
-    # Use cwd=nd to set the child's working directory BEFORE exec.
-    cmd = [_get_system_python(), _worker_path(), nd] + args
+    # Reproduce the proven manual test EXACTLY:
+    #   cd <nd> && python3 <worker> <nd> <args>
+    # /bin/sh resolves python3 from its own PATH — identical to SSH shell.
+    shell_cmd = f"cd {nd} && python3 {_worker_path()} {nd} {' '.join(args)}"
 
     def _run():
-        return subprocess.run(cmd, capture_output=True, text=True,
-                              cwd=nd, timeout=5,
-                              start_new_session=True)
+        return subprocess.run(["/bin/sh", "-c", shell_cmd],
+                              capture_output=True, text=True, timeout=5)
 
     loop = asyncio.get_running_loop()
     try:
