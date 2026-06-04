@@ -72,12 +72,16 @@ async def async_setup_entry(
     trigger_manager = TriggerManager(hass, store)
     signal_monitor = SignalMonitor(hass, signal_store, store, trigger_manager)
 
-    # Protocol encoder: loads irhvac in-process via executor thread.
-    from .encoder.irremote_ac import probe_protocol_encoder
-
-    protocol_ok, protocol_err = await hass.async_add_executor_job(
-        probe_protocol_encoder
+    # ── auto-start the encode server (isolated python3 process) ──
+    from .encoder.irremote_ac import (
+        start_encode_server,
+        probe_protocol_encoder,
     )
+
+    await hass.async_add_executor_job(lambda: start_encode_server(hass))
+
+    # Wait a tick, then probe.
+    protocol_ok, protocol_err = probe_protocol_encoder()
     if not protocol_ok:
         _LOGGER.warning(
             "Protocol AC encoder unavailable on this host: %s. "
@@ -208,6 +212,11 @@ async def async_unload_entry(
         except Exception:
             _LOGGER.debug("Panel %s already removed", PANEL_URL)
         hass.data[DOMAIN].pop("_panel_registered", None)
+
+        # Stop the protocol encode server.
+        from .encoder.irremote_ac import stop_encode_server
+
+        await hass.async_add_executor_job(stop_encode_server)
 
     return True
 
