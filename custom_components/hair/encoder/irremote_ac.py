@@ -75,13 +75,12 @@ def _get_system_python() -> str:
 
 
 async def _call_worker(nd: str, args: list[str]) -> list[int]:
-    """通过数组形式直接拉起子进程，继承父进程环境以避免库路径丢失。"""
+    """通过数组形式直接拉起子进程，cd 到 native 目录以匹配验证过的命令行。"""
 
-    # 形成最纯粹的数组级传递：sys.argv[1] = nd, sys.argv[2] = proto ...
     cmd = [_get_system_python(), _worker_path(), nd] + args
 
     def _run():
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        return subprocess.run(cmd, capture_output=True, text=True, cwd=nd, timeout=5)
 
     loop = asyncio.get_running_loop()
     try:
