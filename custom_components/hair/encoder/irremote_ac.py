@@ -1,24 +1,30 @@
 """Protocol-based AC encoder using IRremoteESP8266 IRac.
 
-All native code runs in a subprocess — the HA process never imports
-``irhvac`` / ``_irhvac.so``.  The encode script is written to ``/tmp``
-to avoid Docker overlayfs issues with script files under ``/config``.
+Loads ``irhvac`` in-process — matching the proven-working manual test:
+    cd /config/.../linux_aarch64_musl && python3 -c "import irhvac; ..."
+
+No subprocess, no env manipulation, no sys.path removal.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 import platform
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from ..models import IRDevice
 
 _LOGGER = logging.getLogger(__name__)
+
+# Lazy-loaded irhvac module.
+_irhvac: ModuleType | None = None
+
+# Maps, populated once.
+_PROTOCOL_MAP: dict[str, int] = {}
+_MODE_MAP: dict[str, int] = {}
+_FAN_MAP: dict[str, int] = {}
 
 
 class IRHVACUnavailableError(ImportError):
@@ -73,105 +79,9 @@ _HARDCODED_PROTOCOLS = [
     "WHIRLPOOL_AC",
 ]
 
-# ---- one-time: copy subprocess script to /tmp -------------------------------
-
-_ENCODE_SCRIPT: str | None = None
-
-_ENCODE_CODE = r"""
-import json, sys
-from pathlib import Path
-
-native_dir = Path(sys.argv[1])
-sys.path.insert(0, str(native_dir))
-import irhvac
-
-protocol_name = sys.argv[2].upper()
-model = int(sys.argv[3])
-mode_str = sys.argv[4].lower()
-degrees = float(sys.argv[5])
-
-args = sys.argv[6:]
-power = "--off" not in args
-fan_str = None
-swingv, swingh = None, None
-i = 0
-while i < len(args):
-    if args[i] == "--fan" and i+1 < len(args):
-        fan_str = args[i+1]; i += 2
-    elif args[i] == "--swing" and i+1 < len(args):
-        sw = args[i+1]
-        if sw in ("vertical","on"): swingv = sw
-        elif sw == "horizontal": swingh = sw
-        elif sw == "both": swingv = "vertical"; swingh = "horizontal"
-        i += 2
-    else:
-        i += 1
-
-def bm(prefix, strip_k=False):
-    m = {}
-    for a in dir(irhvac):
-        if a.startswith(prefix):
-            k = a[len(prefix):]
-            if strip_k and k.startswith("k"): k = k[1:]
-            if k: m[k.lower()] = getattr(irhvac, a, 0)
-    return m
-
-protocols = {a.upper(): getattr(irhvac,a) for a in dir(irhvac) if a.isupper() and not a.startswith("_") and isinstance(getattr(irhvac,a), int)}
-if protocol_name not in protocols:
-    print(f"ERROR: unknown protocol {protocol_name}", file=sys.stderr); sys.exit(1)
-
-mode_val = 0
-if power or mode_str != "off":
-    mm = bm("opmode_t_", strip_k=True)
-    if mode_str not in mm:
-        print(f"ERROR: unknown mode {mode_str}", file=sys.stderr); sys.exit(1)
-    mode_val = mm[mode_str]
-
-fm = bm("fanspeed_t_", strip_k=True)
-
-ac = irhvac.IRac(0)
-ac.next.protocol = protocols[protocol_name]
-ac.next.model = model
-ac.next.power = power
-if power:
-    ac.next.mode = mode_val
-    ac.next.degrees = degrees
-    if fan_str and fan_str in fm:
-        ac.next.fanspeed = fm[fan_str]
-    if swingv:
-        ac.next.swingv = getattr(irhvac, "swingv_t_kAuto", 0)
-    if swingh:
-        ac.next.swingh = getattr(irhvac, "swingh_t_kAuto", 0)
-
-ac.sendAc()
-t = ac.getTiming()
-if t is None:
-    print("ERROR: getTiming() returned None", file=sys.stderr); sys.exit(1)
-print(json.dumps(t))
-"""
-
-
-def _get_encode_script() -> str:
-    """Return path to a tempfile containing the encode script.
-
-    Written once to /tmp to avoid Docker overlayfs issues.
-    """
-    global _ENCODE_SCRIPT
-    if _ENCODE_SCRIPT is not None and os.path.isfile(_ENCODE_SCRIPT):
-        return _ENCODE_SCRIPT
-    fd, path = tempfile.mkstemp(suffix=".py", prefix="hair_encode_", dir="/tmp")
-    with os.fdopen(fd, "w") as f:
-        f.write(_ENCODE_CODE)
-    os.chmod(path, 0o755)
-    _ENCODE_SCRIPT = path
-    _LOGGER.info("Wrote encode script to %s", path)
-    return path
-
-
-# ---- public API -------------------------------------------------------------
 
 def _find_native_dir() -> str | None:
-    nd_root = Path(__file__).parent.parent / "native"
+    _NATIVE_DIR = Path(__file__).parent.parent / "native"
     machine = platform.machine()
     if machine in ("aarch64", "arm64", "armv8l", "armv8b"):
         arch = "linux_aarch64"
@@ -180,21 +90,64 @@ def _find_native_dir() -> str | None:
     else:
         arch = "linux_x86_64"
     for suffix in ("_musl", ""):
-        d = nd_root / f"{arch}{suffix}"
+        d = _NATIVE_DIR / f"{arch}{suffix}"
         if (d / "irhvac.py").is_file() and (d / "_irhvac.so").is_file():
             return str(d)
     return None
 
 
-def probe_protocol_encoder() -> tuple[bool, str | None]:
+def _import_irhvac() -> ModuleType:
+    """Import irhvac in-process, the same way the manual test does."""
+    global _irhvac
+    if _irhvac is not None:
+        return _irhvac
+
     nd = _find_native_dir()
     if nd is None:
-        return False, "No native irhvac directory found"
-    return True, None
+        raise IRHVACUnavailableError("No native irhvac directory")
+
+    # Exact match to the working manual test:
+    #   sys.path.insert(0, native_dir); import irhvac
+    if nd not in sys.path:
+        sys.path.insert(0, nd)
+
+    import irhvac as mod  # type: ignore[no-redef]
+
+    if not hasattr(mod, "IRac"):
+        raise IRHVACUnavailableError(f"irhvac from {nd} missing IRac")
+
+    _irhvac = mod
+    _LOGGER.info("Loaded irhvac from %s", nd)
+
+    # Build lookup maps.
+    for attr in dir(mod):
+        if attr.isupper() and not attr.startswith("_") and isinstance(getattr(mod, attr), int):
+            _PROTOCOL_MAP[attr.upper()] = getattr(mod, attr)
+
+    _MODE_MAP["auto"] = getattr(mod, "opmode_t_kAuto", 0)
+    _MODE_MAP["cool"] = getattr(mod, "opmode_t_kCool", 0)
+    _MODE_MAP["heat"] = getattr(mod, "opmode_t_kHeat", 0)
+    _MODE_MAP["dry"] = getattr(mod, "opmode_t_kDry", 0)
+    _MODE_MAP["fan_only"] = getattr(mod, "opmode_t_kFan", 0)
+
+    _FAN_MAP["auto"] = getattr(mod, "fanspeed_t_kAuto", 0)
+    _FAN_MAP["low"] = getattr(mod, "fanspeed_t_kLow", 0)
+    _FAN_MAP["medium"] = getattr(mod, "fanspeed_t_kMedium", 0)
+    _FAN_MAP["high"] = getattr(mod, "fanspeed_t_kHigh", 0)
+
+    return mod
+
+
+def probe_protocol_encoder() -> tuple[bool, str | None]:
+    try:
+        _import_irhvac()
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
 
 
 def is_protocol_encoder_available() -> bool:
-    return _find_native_dir() is not None
+    return probe_protocol_encoder()[0]
 
 
 def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str, int | str]]]:
@@ -205,7 +158,11 @@ def get_protocol_models(protocol: str | None = None) -> dict[str, list[dict[str,
 
 
 def get_supported_protocols() -> list[str]:
-    return list(_HARDCODED_PROTOCOLS)
+    try:
+        _import_irhvac()
+        return sorted(_PROTOCOL_MAP.keys())
+    except IRHVACUnavailableError:
+        return list(_HARDCODED_PROTOCOLS)
 
 
 def encode(
@@ -218,70 +175,44 @@ def encode(
     swing_mode: str | None = None,
     **__: Any,
 ) -> list[int]:
-    nd = _find_native_dir()
-    if nd is None:
-        raise IRHVACUnavailableError("No native irhvac directory found")
+    mod = _import_irhvac()
 
-    script = _get_encode_script()
-    degrees = round(temperature) if temperature is not None else 24
+    protocol_name = (device.ir_protocol or "").upper()
+    if protocol_name not in _PROTOCOL_MAP:
+        raise ValueError(f"Unknown IR protocol '{device.ir_protocol}'")
 
-    args = [
-        sys.executable, script, nd,
-        (device.ir_protocol or "").upper(),
-        str(device.ir_model or 1),
-        hvac_mode,
-        str(degrees),
-    ]
-    if not power:
-        args.append("--off")
-    if fan_mode:
-        args += ["--fan", fan_mode]
-    if swing_mode and swing_mode != "off":
-        args += ["--swing", swing_mode]
+    ac = mod.IRac(0)
+    ac.next.protocol = _PROTOCOL_MAP[protocol_name]
+    ac.next.model = device.ir_model or 1
 
-    # Minimal env — only PATH + HOME.  Strip everything else.
-    # The manual test proves this works; we match it exactly.
-    minimal_env: dict[str, str] = {}
-    for want in ("PATH", "HOME", "USER", "TMPDIR", "TEMP"):
-        if want in os.environ:
-            minimal_env[want] = os.environ[want]
+    if power:
+        ac.next.power = True
+        ac.next.mode = _MODE_MAP.get(hvac_mode, _MODE_MAP["auto"])
+        if temperature is not None:
+            ac.next.degrees = round(temperature)
+        if fan_mode and fan_mode in _FAN_MAP:
+            ac.next.fanspeed = _FAN_MAP[fan_mode]
+        if swing_mode:
+            if swing_mode in ("vertical", "on"):
+                ac.next.swingv = getattr(mod, "swingv_t_kAuto", 0)
+            elif swing_mode in ("horizontal",):
+                ac.next.swingh = getattr(mod, "swingh_t_kAuto", 0)
+            elif swing_mode in ("both",):
+                ac.next.swingv = getattr(mod, "swingv_t_kAuto", 0)
+                ac.next.swingh = getattr(mod, "swingh_t_kAuto", 0)
+    else:
+        ac.next.power = False
 
-    # Full command for debugging.
-    cmd_str = " ".join(args)
-    _LOGGER.info("Subprocess encode: %s (script=%s env_keys=%s)",
-                 cmd_str[cmd_str.index(" --off") if "--off" in cmd_str else len(cmd_str)//2:],
-                 script,
-                 sorted(minimal_env.keys()))
+    ac.sendAc()
 
-    try:
-        # Use shell=True so the linker environment matches the
-        # proven-working manual test exactly.
-        proc = subprocess.run(
-            cmd_str,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env=minimal_env,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("AC encoder timed out")
-
-    if proc.returncode != 0:
-        err = (proc.stderr or "").strip()[:500]
-        out = (proc.stdout or "").strip()[:200]
-        raise RuntimeError(
-            f"AC encoder exited {proc.returncode}: stderr={err} stdout={out} "
-            f"cmd={cmd_str[:300]}"
-        )
-
-    try:
-        raw: list[int] = json.loads(proc.stdout.strip())
-    except json.JSONDecodeError:
-        raise RuntimeError(f"AC encoder bad JSON: {proc.stdout[:200]}")
+    raw = ac.getTiming()
+    if raw is None:
+        raise RuntimeError("IRac.getTiming() returned None")
 
     signed: list[int] = []
     for i, val in enumerate(raw):
         signed.append(int(val) if i % 2 == 0 else -int(val))
 
+    ac.resetTiming()
+    _LOGGER.debug("Encoded %s: %d timings", protocol_name, len(signed))
     return signed
